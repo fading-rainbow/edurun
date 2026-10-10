@@ -8,8 +8,10 @@ import zipfile
 from pathlib import Path
 
 from .android import AndroidBridge, EmulatorConsole
+from .editor import serve_editor
 from .models import RouteConfig
 from .probe import probe
+from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
 from .simulation import demo_config, simulate
 
@@ -31,6 +33,8 @@ def apk_metadata(path: Path) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="BudaoRun：独立模拟器实验，不自动提交真实跑步")
     commands = parser.add_subparsers(dest="command", required=True)
+    editor = commands.add_parser("editor")
+    editor.add_argument("--port", type=int, default=8765)
     simulate_parser = commands.add_parser("simulate")
     simulate_parser.add_argument("--runs", type=int, default=30)
     simulate_parser.add_argument("--seed", type=int, default=0)
@@ -45,6 +49,12 @@ def main() -> int:
     export = commands.add_parser("export-qit-routes")
     export.add_argument("apk", type=Path)
     export.add_argument("--output", type=Path, default=Path(".local/routes/qitrun"))
+    replay = commands.add_parser("replay-diagnostic")
+    replay.add_argument("--serial", required=True)
+    replay.add_argument("--config", type=Path, required=True)
+    replay.add_argument("--seconds", type=float, default=30)
+    replay.add_argument("--motion-csv", type=Path)
+    replay.add_argument("--output", type=Path, default=Path(".local/runs/replay.json"))
     for name in ("device", "stop", "install", "probe"):
         sub = commands.add_parser(name)
         sub.add_argument("--serial", required=True)
@@ -55,7 +65,10 @@ def main() -> int:
             sub.add_argument("--output", type=Path, default=Path(".local/runs/probe.json"))
     args = parser.parse_args()
     try:
-        if args.command == "simulate":
+        if args.command == "editor":
+            serve_editor(args.port)
+            return 0
+        elif args.command == "simulate":
             if not 1 <= args.runs <= 1000:
                 raise ValueError("runs应在1–1000之间")
             results = [simulate(args.seed + index) for index in range(args.runs)]
@@ -122,6 +135,11 @@ def main() -> int:
             elif args.command == "install":
                 bridge.install(args.apk)
                 result = {"installed_on_project_avd_only": True, "app_not_started": True}
+            elif args.command == "replay-diagnostic":
+                config = RouteConfig.model_validate_json(args.config.read_text("utf-8-sig"))
+                result = replay_diagnostic(
+                    bridge, config, args.output, args.seconds, args.motion_csv
+                )
             else:
                 result = probe(bridge, args.apk, args.output, args.seconds)
                 # 私人诊断详细数据留本地；终端只报告结论。

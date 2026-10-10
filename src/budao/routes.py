@@ -103,6 +103,7 @@ class RoutePlanner:
             raise ValueError("没有有效通道边")
         self.validate_path(config.baseline)
         roads = unary_union(lines)
+        self.roads = roads
         baseline = LineString([self.xy(p) for p in config.baseline])
         if not roads.buffer(0.05).covers(baseline):
             raise ValueError("基线路线不沿可跑通道")

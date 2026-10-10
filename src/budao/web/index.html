@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="local-token" content="__LOCAL_TOKEN__"><title>BudaoRun · 路线工作台</title>
+<link rel="stylesheet" href="/vendor/leaflet.css"><link rel="stylesheet" href="/style.css">
+<script defer src="/vendor/leaflet.js"></script><script defer src="/editor.js"></script></head>
+<body><header><div><small>BUDAORUN LAB / LOCAL ONLY</small><h1>路线工作台</h1></div><span>离线编辑 · 无真实提交</span></header>
+<main><aside>
+<p>内部统一 <b>WGS84</b>。区域不等于道路：只添加已核实的可跑通道。地图编辑不会操作手机。</p>
+<label class="toggle"><input id="tiles" type="checkbox">加载 OpenStreetMap 底图</label>
+<small>默认关闭；开启后可见区域会向OSM请求瓦片。GCJ02地图不能直接代替本工具坐标。</small>
+<h2>1 / 导入或绘制</h2>
+<label>配置或单条轨迹<input id="file" type="file" accept=".json,.geojson,.kml,.gpx"></label>
+<button id="demo">载入合成演示地图</button>
+<div class="modes"><button data-mode="region">绘制区域</button><button data-mode="corridor">绘制通道</button><button data-mode="baseline">绘制基线</button></div>
+<p id="modeHint">先导入路线，或载入合成演示。</p>
+<div class="modes"><button id="finish">完成当前线</button><button id="undo">撤销当前点</button></div>
+<div class="modes"><button id="closeBaseline">闭合基线</button><button id="addRoad">基线加入通道</button></div>
+<small>“基线加入通道”表示你确认该轨迹是可跑道路。导入轨迹不自动认定道路。</small>
+<h2>2 / 配置参数</h2>
+<div class="fields"><label>速度 m/s<input id="speed" type="number" min=".1" max="10" step=".1" value="2.5"></label><label>最低里程 m<input id="minimum" type="number" min="1" value="1500"></label></div>
+<label>完整配置 JSON<textarea id="json" spellcheck="false" aria-label="完整配置 JSON"></textarea></label>
+<button id="apply">应用JSON到地图</button>
+<h2>3 / 校验与保存</h2>
+<div class="modes"><button id="validate">校验路线</button><button id="save" class="primary">保存到 .local</button></div>
+<output id="status" role="status">尚未校验。保存只生成新文件，不覆盖旧路线。</output>
+</aside><section><div id="map" aria-label="WGS84路线地图"></div><div class="legend"><span class="green">● 区域</span><span class="gray">● 已知通道</span><span class="blue">● 基线</span><span>点击地图加点；完成后用JSON精确调整</span></div></section></main>
+</body></html>

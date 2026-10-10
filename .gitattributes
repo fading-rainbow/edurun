@@ -1,1 +1,2 @@
 * text=auto eol=lf
+src/budao/web/vendor/* -text whitespace=cr-at-eol

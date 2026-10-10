@@ -35,6 +35,28 @@ pwsh -NoProfile -File scripts/Stop-ExperimentalAVD.ps1
 ## 路线与模型
 
 ```powershell
+uv run budao editor --port 8765
+# 打开 http://127.0.0.1:8765/，绘制区域/通道/基线或导入单条KML/GPX/GeoJSON
+# 校验后只生成新的.local/routes/edited-*.json，不覆盖现有路线。
+```
+
+编辑器采用本地 Leaflet 1.9.4，默认不请求任何底图。可选OSM底图会请求其瓦片。
+导入轨迹只作为基线；需明确添加允许区域及已知通道，不自动认定校园道路或坐标来源。
+
+持续位置/运动回放已独立实现，慢速界面/模型不能阻塞运动线程；移动租约默认2秒，
+观察停止后驻留、不追赶。以下命令只启动本项目诊断App，不启动乐跑：
+
+```powershell
+uv run budao replay-diagnostic --serial emulator-5580 --config .local/routes/replay-demo.json --seconds 30
+# 实采CSV可用 --motion-csv .local/motion/sample.csv
+```
+
+CSV格式为 `t_s,ax,ay,az,gx,gy,gz`；加速度含重力、单位m/s²，陀螺仪rad/s。
+默认波形仅证明数据链路，不是人体跑步或计步。诊断App离开前台时自动停止，不抢回界面。
+30秒设备回放已通过：约75.08m、最终GPS误差0.123m，实际加速度/陀螺仪事件约25Hz。
+这不是乐跑里程、打卡成功或有效记录。
+
+```powershell
 uv run budao inspect-track .local/routes/qitrun/huancaochang.kml
 uv run budao export-qit-routes .local/apks/candidate-qitrun.apk
 ```
@@ -46,6 +68,7 @@ uv run budao export-qit-routes .local/apks/candidate-qitrun.apk
 - `VisionClient` 使用环境变量 `VISION_BASE_URL`、`VISION_MODEL`、`VISION_API_KEY`。不会读取Codex认证或自动调用付费模型。
 - 视觉接口只做HTTP模拟测试，尚未配置或验证真实模型；实际地图锚点和控件选择器尚未采集。
 - 暂未提供真实跑步自动提交入口。登录、地图标定、打卡控件和有效性关卡通过后，再接入完整现场执行循环。
+- 正式乐跑当前不在开放时段，后续先用自由乐跑做有限现场测试；自由乐跑通过不替代正式三点记录验收。
 
 ## 重建/回滚
 

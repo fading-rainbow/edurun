@@ -5,7 +5,7 @@
   "development_branch": "main",
   "source_directory": "E:/edurun",
   "baseline_date": "2026-10-10",
-  "scope": "validated diagnostics and controller core; not a complete live running product",
+  "scope": "validated diagnostics, bounded motion driver, local route editor and controller core; not a complete live running product",
   "production": {
     "deployed": false,
     "real_running_sessions_started": 0,
@@ -24,6 +24,9 @@
     "PowerShell AST parse",
     "scripts/Build-Diagnostic.ps1",
     "budao probe on project emulator only",
+    "30-second replay-diagnostic on project emulator only",
+    "actual browser route validation and isolated save",
+    "uv build (local wheel/sdist)",
     "gitleaks staged source/export scan"
   ],
   "excluded": [".local/", "APK", "routes with real coordinates", "credentials", "signing materials", "screenshots", "logs", "runtime configuration"]
