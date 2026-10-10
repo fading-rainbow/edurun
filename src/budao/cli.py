@@ -7,7 +7,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from .android import AndroidBridge, EmulatorConsole
+from .android import AVD_NAME, PROJECT_AVD_NAMES, AndroidBridge, EmulatorConsole
 from .editor import serve_editor
 from .models import RouteConfig
 from .probe import probe
@@ -51,6 +51,7 @@ def main() -> int:
     export.add_argument("--output", type=Path, default=Path(".local/routes/qitrun"))
     replay = commands.add_parser("replay-diagnostic")
     replay.add_argument("--serial", required=True)
+    replay.add_argument("--avd", choices=sorted(PROJECT_AVD_NAMES), default=AVD_NAME)
     replay.add_argument("--config", type=Path, required=True)
     replay.add_argument("--seconds", type=float, default=30)
     replay.add_argument("--motion-csv", type=Path)
@@ -58,6 +59,7 @@ def main() -> int:
     for name in ("device", "stop", "install", "probe"):
         sub = commands.add_parser(name)
         sub.add_argument("--serial", required=True)
+        sub.add_argument("--avd", choices=sorted(PROJECT_AVD_NAMES), default=AVD_NAME)
         if name in {"install", "probe"}:
             sub.add_argument("--apk", type=Path, required=True)
         if name == "probe":
@@ -119,7 +121,7 @@ def main() -> int:
                     destination.write_bytes(data)
             result = {"exported": names, "private_local_only": True}
         else:
-            bridge = AndroidBridge(args.serial)
+            bridge = AndroidBridge(args.serial, avd_name=args.avd)
             if args.command == "device":
                 with EmulatorConsole(bridge) as console:
                     result = {

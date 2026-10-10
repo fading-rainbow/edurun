@@ -13,6 +13,7 @@ from pathlib import Path
 from .models import GeoPoint
 
 AVD_NAME = "BudaoRun_API34_Play"
+PROJECT_AVD_NAMES = frozenset({AVD_NAME, "BudaoRun_API36_Play"})
 DIAGNOSTIC_PACKAGE = "com.edurun.diagnostic"
 
 
@@ -33,7 +34,7 @@ class AndroidBridge:
     ):
         if not re.fullmatch(r"emulator-\d+", serial):
             raise ValueError("写操作只能使用本项目模拟器；不会向 USB 真机注入数据")
-        if avd_name != AVD_NAME:
+        if avd_name not in PROJECT_AVD_NAMES:
             raise ValueError("不能借助修改参数操作其他旧 AVD")
         self.serial, self.adb, self.avd_name, self.runner = (
             serial,
@@ -60,7 +61,10 @@ class AndroidBridge:
     def check_device(self) -> None:
         if self.run("shell", "getprop", "ro.kernel.qemu") != "1":
             raise ValueError("设备没有确认是 QEMU 模拟器")
-        name = self.run("emu", "avd", "name").splitlines()[0]
+        names = self.run("emu", "avd", "name").splitlines()
+        if not names:
+            raise ValueError("未读取到AVD名称，拒绝写操作")
+        name = names[0]
         if name != self.avd_name:
             raise ValueError(f"AVD 不匹配：必须为 {self.avd_name}")
 

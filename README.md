@@ -32,6 +32,25 @@ pwsh -NoProfile -File scripts/Stop-ExperimentalAVD.ps1
 诊断只启动本项目诊断App，写操作同时验证 QEMU 和 AVD 名称。不会操作 USB 真机。
 控制台认证令牌只在内存中用于 localhost，不记录或上传。
 
+### Android 16 兼容性对照设备
+
+默认入口仍是 API34，不自动切换。另建的 `BudaoRun_API36_Play` 使用官方
+API36 Google Play x86_64 镜像、3GB内存、端口5582；保留API34及旧设备的数据。
+须先通过SDK Manager安装 `system-images;android-36;google_apis_playstore;x86_64`，
+再显式选择设备（不要同时启动两台）：
+
+```powershell
+pwsh -NoProfile -File scripts/New-ExperimentalAVD.ps1 -Variant api36
+pwsh -NoProfile -File scripts/Start-ExperimentalAVD.ps1 -Variant api36 -Visible
+uv run budao device --serial emulator-5582 --avd BudaoRun_API36_Play
+uv run budao probe --serial emulator-5582 --avd BudaoRun_API36_Play --apk $build.apk --seconds 15
+pwsh -NoProfile -File scripts/Stop-ExperimentalAVD.ps1 -Variant api36
+```
+
+创建脚本遇到已有AVD会拒绝重建；CLI必须同时匹配指定AVD名，不会凭端口自动选择其他设备。
+API36实际诊断通过（375轮、加速度/陀螺仪约25Hz），仍没有标准计步传感器。
+最新版微信8.0.79在该对照设备进入了欢迎页；这不等于账号登录或乐跑认证成功。
+
 ## 路线与模型
 
 ```powershell
