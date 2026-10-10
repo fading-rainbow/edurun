@@ -50,6 +50,8 @@ pwsh -NoProfile -File scripts/Stop-ExperimentalAVD.ps1 -Variant api36
 创建脚本遇到已有AVD会拒绝重建；CLI必须同时匹配指定AVD名，不会凭端口自动选择其他设备。
 API36实际诊断通过（375轮、加速度/陀螺仪约25Hz），仍没有标准计步传感器。
 最新版微信8.0.79在该对照设备进入了欢迎页；这不等于账号登录或乐跑认证成功。
+但乐跑4.3.0在API36两次启动均被信号终止（exit-info reason2/status24），未到首页，
+因此不能把该对照设备当作可用主环境；已切回保留数据的API34继续认证检查。
 
 ## 路线与模型
 
