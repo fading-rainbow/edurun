@@ -9,7 +9,7 @@ if (Get-NetTCPConnection -LocalPort 5580,5581 -State Listen -ErrorAction Silentl
 $output = Join-Path $root '.local\runs'
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$arguments = @('-avd',$name,'-port','5580','-memory','2048','-no-snapshot-load','-no-snapshot-save','-no-boot-anim','-gpu','auto','-no-audio')
+$arguments = @('-avd',$name,'-port','5580','-memory','2048','-no-snapshot-load','-no-snapshot-save','-no-boot-anim','-gpu','auto','-no-audio','-timezone','Asia/Shanghai')
 if (-not $Visible) { $arguments += '-no-window' }
 $style = if ($Visible) { 'Normal' } else { 'Hidden' }
 $process = Start-Process -FilePath (Join-Path $Sdk 'emulator\emulator.exe') -ArgumentList $arguments -WindowStyle $style -PassThru -RedirectStandardOutput (Join-Path $output "$stamp-emulator.stdout.log") -RedirectStandardError (Join-Path $output "$stamp-emulator.stderr.log")

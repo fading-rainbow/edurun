@@ -56,7 +56,7 @@ QitRun1.0已确认使用KML插值、前台服务、GPS/Network测试提供器。
 
 ### 3.1 环境与数据驱动
 
-- Android Studio接入现有SDK，不搬迁SDK、不覆盖旧AVD或全局Java/PATH。
+- Android Studio接入现有SDK，不搬迁SDK、不覆盖旧AVD或全局Java/PATH。启动脚本按用户时区使用Asia/Shanghai。
 - 本轮按用户允许的资源占用，独立设备采用2GB而非初拟3GB；关闭IDE进行实验。
 - 所有写操作验证QEMU及本项目AVD名，拒绝USB真机和旧设备。
 - 官方console持久连接支持GPS、三轴加速度、陀螺仪；位置1Hz、运动25Hz为实验目标。
