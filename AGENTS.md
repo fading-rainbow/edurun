@@ -1,0 +1,9 @@
+# BudaoRun 工作规则
+
+- 主开发分支为 main；先检查工作区/远端，保留其他任务改动。
+- 修改后执行 `uv run pytest -q`、`uv run ruff check .`、`git diff --check`、gitleaks。
+- 普通 commit/push 后复核完整远端 HEAD；不得 force push；同步不代表真实跑步或部署验收。
+- `.local/` 仅保存设备、路线、截图、配置和实验结果；APK、签名材料、账号/密钥/日志不得入库。
+- 自动化写操作只允许本项目独立模拟器；真机默认只读。不得自动复制登录数据或提交真实跑步。
+- 不改旧 AVD，不 wipe-data，不改全局 JAVA_HOME，不终止用户应用。
+- 以实际设备接收的数据和 App 记录状态验收；不得将静态测试或合成场景说成真实有效跑步。

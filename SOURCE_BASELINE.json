@@ -1,0 +1,30 @@
+{
+  "project": "BudaoRun",
+  "repository": "fading-rainbow/edurun",
+  "visibility": "private",
+  "development_branch": "main",
+  "source_directory": "E:/edurun",
+  "baseline_date": "2026-10-10",
+  "scope": "validated diagnostics and controller core; not a complete live running product",
+  "production": {
+    "deployed": false,
+    "real_running_sessions_started": 0,
+    "real_records_submitted": 0,
+    "effective_record_verified": false
+  },
+  "cloud": {
+    "codex_task_created": false,
+    "ci_is_not_codex_cloud": true
+  },
+  "verification_commands": [
+    "uv run pytest -q",
+    "uv run ruff check .",
+    "uv run ruff format --check .",
+    "uv run budao simulate --runs 30",
+    "PowerShell AST parse",
+    "scripts/Build-Diagnostic.ps1",
+    "budao probe on project emulator only",
+    "gitleaks staged source/export scan"
+  ],
+  "excluded": [".local/", "APK", "routes with real coordinates", "credentials", "signing materials", "screenshots", "logs", "runtime configuration"]
+}
