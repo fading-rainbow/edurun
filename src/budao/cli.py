@@ -11,6 +11,7 @@ from .android import AVD_NAME, PROJECT_AVD_NAMES, AndroidBridge, EmulatorConsole
 from .editor import serve_editor
 from .models import RouteConfig
 from .motion_data import prepare_realworld
+from .mumu import MuMuBridge
 from .probe import probe
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
@@ -63,6 +64,8 @@ def main() -> int:
     public_motion = commands.add_parser("prepare-public-motion")
     public_motion.add_argument("--directory", type=Path, default=Path(".local/motion/realworld"))
     public_motion.add_argument("--seconds", type=int, default=60)
+    mumu = commands.add_parser("inspect-mumu", help="只读独立MuMu实例及本项目诊断快照")
+    mumu.add_argument("--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json"))
     for name in ("device", "stop", "install", "probe", "inspect-target", "startup-compat"):
         sub = commands.add_parser(name)
         sub.add_argument("--serial", required=True)
@@ -118,6 +121,21 @@ def main() -> int:
             result = apk_metadata(args.apk)
         elif args.command == "prepare-public-motion":
             result = prepare_realworld(args.directory, args.seconds)
+        elif args.command == "inspect-mumu":
+            bridge = MuMuBridge(args.receipt)
+            snapshot = bridge.diagnostic_snapshot()
+            result = {
+                "read_only": True,
+                "project_instance": bridge.avd_name,
+                "gnss": snapshot.get("gnss"),
+                "sensors": [
+                    {key: sensor.get(key) for key in ("type", "name", "event_count", "received_hz")}
+                    for sensor in snapshot.get("sensors", [])
+                    if sensor.get("registered")
+                ],
+                "target_login_verified": False,
+                "formal_record_validated": False,
+            }
         elif args.command == "export-qit-routes":
             if ".local" not in args.output.resolve().parts:
                 raise ValueError("真实路线只能导出到忽略的.local目录")
