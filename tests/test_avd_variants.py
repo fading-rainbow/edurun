@@ -78,3 +78,12 @@ def test_stop_waits_for_owned_process_and_port_without_force_kill():
     assert "$i -lt 20" in text
     assert "if (-not $ports -and -not $owned)" in text
     assert "Stop-Process" not in text and "taskkill" not in text
+
+
+def test_renderer_override_is_explicit_and_runtime_only():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/Start-ExperimentalAVD.ps1").read_text("utf-8-sig")
+    assert "[ValidateSet('auto','host','swiftshader')][string]$GpuMode='auto'" in text
+    assert "'-gpu',$GpuMode" in text
+    assert "Set-Content" not in text
+    assert "'-no-snapshot-load','-no-snapshot-save'" in text
