@@ -206,7 +206,9 @@ class MotionWorker:
                             next_gps = now + 1
                         self.iterations += 1
                         # 不补发堆积的旧传感器事件。
-                        self.stop_event.wait(max(0, self.period_s - (time.monotonic() - now)))
+                        # Windows Event.wait实测20ms会量化为约31ms；Python3.13 sleep
+                        # 使用高精度等待。停止响应最多一个受限周期（20–40ms）。
+                        time.sleep(max(0, self.period_s - (time.monotonic() - now)))
                 finally:
                     console.sensor("acceleration", REST.acceleration)
                     console.sensor("gyroscope", REST.gyroscope)

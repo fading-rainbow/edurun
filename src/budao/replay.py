@@ -41,7 +41,7 @@ def replay_diagnostic(
     planner = RoutePlanner(config)
     motion = MotionClip(motion_csv) if motion_csv else None
     bridge.run("shell", "am", "force-stop", DIAGNOSTIC_PACKAGE)
-    bridge.diagnostic_start()
+    bridge.diagnostic_start(motion_hz=motion_hz)
     time.sleep(1)
     engine = DriveEngine(planner, config.baseline[0])
     start = time.monotonic()

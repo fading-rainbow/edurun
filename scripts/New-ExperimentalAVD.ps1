@@ -1,4 +1,4 @@
-param([string]$Sdk = "$env:LOCALAPPDATA\Android\Sdk", [ValidateSet('api34','api36')][string]$Variant='api34')
+param([string]$Sdk = "$env:LOCALAPPDATA\Android\Sdk", [ValidateSet('api34','api36','api30')][string]$Variant='api34')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Experimental-Avd.ps1')
 $spec = Get-ExperimentalAvd $Variant

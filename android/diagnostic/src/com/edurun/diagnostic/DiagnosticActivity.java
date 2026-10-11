@@ -8,6 +8,7 @@ import android.hardware.SensorManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -31,6 +32,7 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
     private LocationManager manager;
     private TextView display;
     private String error = "";
+    private int motionPeriodUs = 40000;
     private final LocationListener listener = new LocationListener() {
         @Override public void onLocationChanged(Location location) {
             locations.put(location.getProvider(), new Location(location));
@@ -65,6 +67,10 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
         setContentView(scroll);
         sensors = (SensorManager) getSystemService(SENSOR_SERVICE);
         manager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        int requestedPeriod = getIntent().getIntExtra("motion_period_us", 40000);
+        if (requestedPeriod >= 20000 && requestedPeriod <= 40000) {
+            motionPeriodUs = requestedPeriod;
+        }
         for (Sensor sensor : sensors.getSensorList(Sensor.TYPE_ALL)) {
             metrics.put(sensor.getType(), new Metric(sensor));
         }
@@ -74,7 +80,7 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
         for (int type : requested) {
             Metric metric = metrics.get(type);
             if (metric != null) {
-                try { metric.registered = sensors.registerListener(this, metric.sensor, 40000); }
+                try { metric.registered = sensors.registerListener(this, metric.sensor, motionPeriodUs); }
                 catch (SecurityException failure) { error = "sensor permission not granted"; }
             }
         }
@@ -108,12 +114,20 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
     }
     @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
 
+    @SuppressWarnings("deprecation")
+    private static boolean isMockLocation(Location location) {
+        // isMock()从API31才存在；API30必须读取旧接口，不能把崩溃当接收成功。
+        if (Build.VERSION.SDK_INT >= 31) return location.isMock();
+        return location.isFromMockProvider();
+    }
+
     private void writeSnapshot() {
         try {
             JSONObject output = new JSONObject();
             output.put("package", getPackageName());
             output.put("elapsed_realtime_ns", SystemClock.elapsedRealtimeNanos());
             output.put("error", error);
+            output.put("requested_motion_period_us", motionPeriodUs);
             JSONArray available = new JSONArray();
             for (Metric metric : metrics.values()) {
                 JSONObject item = new JSONObject();
@@ -144,7 +158,7 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
                 item.put("longitude", location.getLongitude());
                 item.put("speed_mps", location.getSpeed());
                 item.put("accuracy_m", location.getAccuracy());
-                item.put("is_mock", location.isMock());
+                item.put("is_mock", isMockLocation(location));
                 item.put("elapsed_realtime_ns", location.getElapsedRealtimeNanos());
                 fixes.put(item);
             }

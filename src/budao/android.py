@@ -13,7 +13,7 @@ from pathlib import Path
 from .models import GeoPoint
 
 AVD_NAME = "BudaoRun_API34_Play"
-PROJECT_AVD_NAMES = frozenset({AVD_NAME, "BudaoRun_API36_Play"})
+PROJECT_AVD_NAMES = frozenset({AVD_NAME, "BudaoRun_API36_Play", "BudaoRun_API30_Play"})
 DIAGNOSTIC_PACKAGE = "com.edurun.diagnostic"
 
 
@@ -56,6 +56,14 @@ class AndroidBridge:
         )
         if process.returncode:
             raise RuntimeError(f"ADB 操作失败：{process.stderr.strip()[:200]}")
+        # am start 可在ADB退出码为0时报告不存在的Activity；不能当作成功。
+        if arguments[:3] == ("shell", "am", "start") and re.search(
+            r"^Error(?::| type \d+(?::|$))",
+            process.stdout + "\n" + process.stderr,
+            re.MULTILINE,
+        ):
+            # 不回显Intent/URI，避免把认证参数带入错误日志。
+            raise RuntimeError("Android Activity 启动被拒绝；ADB零退出码不代表成功")
         return process.stdout.strip()
 
     def check_device(self) -> None:
@@ -74,7 +82,9 @@ class AndroidBridge:
             raise ValueError("找不到 APK")
         self.run("install", "-r", str(apk.resolve()), timeout=180)
 
-    def diagnostic_start(self) -> None:
+    def diagnostic_start(self, motion_hz: float = 25) -> None:
+        if not math.isfinite(motion_hz) or not 25 <= motion_hz <= 50:
+            raise ValueError("诊断采样频率必须为25–50Hz")
         self.check_device()
         for permission in (
             "ACCESS_FINE_LOCATION",
@@ -82,7 +92,16 @@ class AndroidBridge:
             "ACTIVITY_RECOGNITION",
         ):
             self.run("shell", "pm", "grant", DIAGNOSTIC_PACKAGE, f"android.permission.{permission}")
-        self.run("shell", "am", "start", "-n", f"{DIAGNOSTIC_PACKAGE}/.DiagnosticActivity")
+        self.run(
+            "shell",
+            "am",
+            "start",
+            "-n",
+            f"{DIAGNOSTIC_PACKAGE}/.DiagnosticActivity",
+            "--ei",
+            "motion_period_us",
+            str(round(1_000_000 / motion_hz)),
+        )
 
 
 class EmulatorConsole:

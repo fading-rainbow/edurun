@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import math
+from types import SimpleNamespace
 
 import pytest
 
-from budao.driver import REST, DiagnosticWave, DriveEngine, MotionClip
+from budao.driver import REST, DiagnosticWave, DriveEngine, MotionClip, MotionWorker
 from budao.routes import RoutePlanner, distance, interpolate
 from budao.simulation import demo_config
 
@@ -96,3 +98,46 @@ def test_bad_motion_clip(tmp_path, body):
     path.write_text(body)
     with pytest.raises(ValueError):
         MotionClip(path)
+
+
+@pytest.mark.parametrize("rate", [25, 50])
+@pytest.mark.parametrize("command_cost", [0.0005, 0.05])
+def test_worker_high_precision_wait_is_bounded_and_never_catches_up(
+    monkeypatch, rate, command_cost
+):
+    clock = [0.0]
+    calls, waits = [], []
+    position = demo_config().baseline[0]
+    state = SimpleNamespace(position=position, moving=False)
+
+    class Console:
+        def sensor(self, name, values):
+            clock[0] += command_cost
+            calls.append((name, values))
+
+        def location(self, point, speed):
+            clock[0] += command_cost
+            calls.append((point, speed))
+
+    monkeypatch.setattr("budao.driver.time.monotonic", lambda: clock[0])
+    worker = MotionWorker(
+        SimpleNamespace(check_device=lambda: None),
+        SimpleNamespace(position=position, step=lambda _t: state, pause=lambda _r: None),
+        console_factory=lambda _bridge: contextlib.nullcontext(Console()),
+        motion_hz=rate,
+    )
+
+    def sleep(delay):
+        waits.append(delay)
+        worker.stop_event.set()
+
+    monkeypatch.setattr("budao.driver.time.sleep", sleep)
+    monkeypatch.setattr(worker.stop_event, "wait", lambda *_a: pytest.fail("coarse wait"))
+    worker._loop()
+    assert worker.error is None and worker.iterations == 1
+    assert waits == pytest.approx([max(0, 1 / rate - command_cost * 3)])
+    assert calls[-3:] == [
+        ("acceleration", REST.acceleration),
+        ("gyroscope", REST.gyroscope),
+        (position, 0),
+    ]

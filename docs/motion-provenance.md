@@ -32,12 +32,17 @@ uv run budao prepare-public-motion
 本机已生成 `s1-running-waist-60s-50hz.csv` 和来源/质量JSON，MotionClip格式检查通过。
 选择的是匿名公开参与者的腰部数据，不是用户本人或当前手机实采；活动标签来自发布者。
 MotionClip会循环片段，来源JSON记录接缝六轴差值；这不是完整十分钟连续真人轨迹。
-未将该片段注入当前设备：QQ密码交接期间不抢前台、不启动诊断App。
-待交接完成才可用独立诊断验证实际接收频率，再核对目标App行为。
+2026-10-11在独立API30对照设备完成60秒诊断回放：两传感器各3014个事件、均50Hz，
+驱动3022次，诊断位移150.139m，GPS最终误差0.043m；没有提交记录。
+原API34的QQ登录数据保持原位，未迁移；本次没有在用户输入密码时抢前台。
+转换器来源JSON仍代表准备阶段；设备接收结果另存`.local/runs/`，不修改来源证明或上传原始数据。
+实际乐跑接受度、计步和有效性依然未证明。
 
 ```powershell
 # 仅示例，执行前必须结束认证交接并确认诊断前台；不是乐跑启动/提交命令。
 uv run budao replay-diagnostic --serial emulator-5580 --config .local/routes/replay-demo.json --motion-csv .local/motion/realworld/s1-running-waist-60s-50hz.csv --motion-hz 50 --seconds 30
+# 已实测的API30对照需显式指定名称与端口（先停止API34）：
+uv run budao replay-diagnostic --serial emulator-5584 --avd BudaoRun_API30_Play --config .local/routes/replay-demo.json --motion-csv .local/motion/realworld/s1-running-waist-60s-50hz.csv --motion-hz 50 --seconds 60
 ```
 
 默认25Hz行为保留。50Hz是新可选目标，必须读取实际 `received_hz`；新模式不足目标90%不会判诊断通过。

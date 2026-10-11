@@ -68,6 +68,28 @@ API34现已进入过MapRunActivity并实际渲染高德底图，但定位仍显�
 初始化日志有RunHelper空指针，尚未取得可用开始/结束控件或真实记录ID。
 因此地图/运行初始化关卡仍未通过；不能把底图渲染当成自由跑完成。
 
+### Android 11 / ARM32 兼容性对照
+
+新增独立 `BudaoRun_API30_Play`（Google Play x86_64 revision10，3GB，端口5584）。
+默认仍为API34，原设备及其QQ登录数据未修改、复制或重置。不要同时启动多台：
+
+```powershell
+pwsh -NoProfile -File scripts/New-ExperimentalAVD.ps1 -Variant api30
+pwsh -NoProfile -File scripts/Start-ExperimentalAVD.ps1 -Variant api30 -Visible
+uv run budao device --serial emulator-5584 --avd BudaoRun_API30_Play
+pwsh -NoProfile -File scripts/Stop-ExperimentalAVD.ps1 -Variant api30
+```
+
+创建前需安装官方 `system-images;android-30;google_apis_playstore;x86_64`。
+该设备实际ABI包含ARM32/ARM64，shell为uid2000；未经修改的乐跑4.3.0/code230
+指定ARM32安装后已通过协议、引导并进入MainActivity。OS与ABI同时变化，
+不能据此断言此前故障的唯一原因，也不代表地图、账号或有效记录已通过。
+API34的QQ登录在电脑重启后保留，但乐跑官方QQ授权曾使openSdk进程SIGSEGV；
+API34冷启动无焦点的现象在临时3GB内存对照中仍存在，未把增加内存标为修复。
+API30上的公开腰部running片段已完成60秒独立诊断：加速度/陀螺仪各3014个事件、
+均50Hz，约150.14m诊断位移，最终GPS误差0.043m；标准计步传感器仍缺失。
+这仅验证数据接收，不是乐跑里程、打卡或有效记录。
+
 ## 路线与模型
 
 ```powershell
@@ -91,6 +113,10 @@ CSV格式为 `t_s,ax,ay,az,gx,gy,gz`；加速度含重力、单位m/s²，陀螺
 可执行 `uv run budao prepare-public-motion` 准备有官方来源的公开running腰部片段；
 来源、采样时钟、佩戴位置和循环限制见[运动来源说明](docs/motion-provenance.md)。
 新参数`--motion-hz 50`只增加受限诊断采样目标，默认25Hz不变；实际接收及目标App接受仍需单独实测。
+诊断App按配置请求20–40ms采样；已修复API30不存在`Location.isMock()`导致的崩溃，
+旧系统读取原有`isFromMockProvider()`，不改变位置来源标志。
+Windows本机实测`Event.wait(20ms)`约30ms、`time.sleep(20ms)`约20ms，
+运动线程改用高精度sleep，仍不追赶旧采样，停止响应最多一个20–40ms周期。
 默认波形仅证明数据链路，不是人体跑步或计步。诊断App离开前台时自动停止，不抢回界面。
 30秒设备回放已通过：约75.08m、最终GPS误差0.123m，实际加速度/陀螺仪事件约25Hz。
 这不是乐跑里程、打卡成功或有效记录。
@@ -107,7 +133,8 @@ uv run budao export-qit-routes .local/apks/candidate-qitrun.apk
 - `VisionClient` 使用环境变量 `VISION_BASE_URL`、`VISION_MODEL`、`VISION_API_KEY`。不会读取Codex认证或自动调用付费模型。
 - 视觉接口只做HTTP模拟测试，尚未配置或验证真实模型；实际地图锚点和控件选择器尚未采集。
 - 暂未提供真实跑步自动提交入口。登录、地图标定、打卡控件和有效性关卡通过后，再接入完整现场执行循环。
-- 正式乐跑当前不在开放时段，后续先用自由乐跑做有限现场测试；自由乐跑通过不替代正式三点记录验收。
+- 正式乐跑曾在初次检查时不在开放时段；当前时段与账号规则需登录后重新核对。
+  后续先用自由乐跑做有限现场测试；自由乐跑通过不替代正式三点记录验收。
 
 ## 重建/回滚
 
