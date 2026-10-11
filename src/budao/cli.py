@@ -14,6 +14,7 @@ from .probe import probe
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
 from .simulation import demo_config, simulate
+from .target import inspect_target
 
 
 def apk_metadata(path: Path) -> dict:
@@ -56,7 +57,7 @@ def main() -> int:
     replay.add_argument("--seconds", type=float, default=30)
     replay.add_argument("--motion-csv", type=Path)
     replay.add_argument("--output", type=Path, default=Path(".local/runs/replay.json"))
-    for name in ("device", "stop", "install", "probe"):
+    for name in ("device", "stop", "install", "probe", "inspect-target"):
         sub = commands.add_parser(name)
         sub.add_argument("--serial", required=True)
         sub.add_argument("--avd", choices=sorted(PROJECT_AVD_NAMES), default=AVD_NAME)
@@ -137,6 +138,8 @@ def main() -> int:
             elif args.command == "install":
                 bridge.install(args.apk)
                 result = {"installed_on_project_avd_only": True, "app_not_started": True}
+            elif args.command == "inspect-target":
+                result = inspect_target(bridge).model_dump()
             elif args.command == "replay-diagnostic":
                 config = RouteConfig.model_validate_json(args.config.read_text("utf-8-sig"))
                 result = replay_diagnostic(

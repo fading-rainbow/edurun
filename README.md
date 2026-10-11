@@ -53,6 +53,21 @@ API36实际诊断通过（375轮、加速度/陀螺仪约25Hz），仍没有标�
 但乐跑4.3.0在API36两次启动均被信号终止（exit-info reason2/status24），未到首页，
 因此不能把该对照设备当作可用主环境；已切回保留数据的API34继续认证检查。
 
+### 当前 App 的只读观察
+
+```powershell
+uv run budao inspect-target --serial emulator-5580
+```
+
+仅核对4.3.0/code230的真实MapRunActivity控件：公里→米、用时、已打卡计数及GPS文字。
+缺失/重复/隐藏控件、热量模式、版本不同或读取中切换前台时拒绝猜测。
+QQ登录/密码页不读取界面树或截图；该命令不点击、不移动、不提交、也不调用模型。
+输出的`run_started_proven`及`record_valid_proven`仍为false：读到数字不等于跑步已开始或有效。
+
+API34现已进入过MapRunActivity并实际渲染高德底图，但定位仍显示“搜索中”，
+初始化日志有RunHelper空指针，尚未取得可用开始/结束控件或真实记录ID。
+因此地图/运行初始化关卡仍未通过；不能把底图渲染当成自由跑完成。
+
 ## 路线与模型
 
 ```powershell

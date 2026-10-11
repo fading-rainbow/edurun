@@ -10,15 +10,27 @@ from PIL import Image
 from .android import AndroidBridge
 
 
-def focused_package(window_displays: str) -> str | None:
+def focused_component(window_displays: str) -> tuple[str, str] | None:
     """从真实焦点读包名；不回退到后台任务列表的最后一个Activity。"""
     focus = re.findall(r"^\s*mCurrentFocus=([^\r\n]+)", window_displays, re.MULTILINE)
     if len(focus) != 1:
         return None
     match = re.fullmatch(
-        r"Window\{[^\r\n{}]*\s+([A-Za-z0-9_.]+)/[A-Za-z0-9_.$]+\}", focus[0].strip()
+        r"Window\{[^\r\n{}]*\s+([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)\}", focus[0].strip()
     )
-    return match[1] if match else None
+    if not match:
+        return None
+    package, activity = match[1], match[2]
+    if activity.startswith("."):
+        activity = package + activity
+    elif "." not in activity:
+        activity = package + "." + activity
+    return package, activity
+
+
+def focused_package(window_displays: str) -> str | None:
+    component = focused_component(window_displays)
+    return component[0] if component else None
 
 
 class AppUI:
