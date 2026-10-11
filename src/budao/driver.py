@@ -36,7 +36,7 @@ class DiagnosticWave:
 
 
 class MotionClip:
-    """用户提供的 CSV：t_s,ax,ay,az,gx,gy,gz；含重力 m/s²，陀螺仪 rad/s。"""
+    """外部CSV：t_s,ax,ay,az,gx,gy,gz；含重力 m/s²、rad/s；来源另行核实。"""
 
     def __init__(self, path: Path):
         if path.stat().st_size > 4 * 1024 * 1024:
@@ -148,7 +148,7 @@ class DriveEngine:
 
 
 class MotionWorker:
-    """25Hz线程驱动，GPS1Hz；控制台失败会显式上报，退出恢复静止运动值。"""
+    """默认25Hz、可选50Hz线程驱动，GPS1Hz；退出恢复静止值。"""
 
     def __init__(
         self,
@@ -156,10 +156,15 @@ class MotionWorker:
         engine: DriveEngine,
         motion: DiagnosticWave | MotionClip | None = None,
         console_factory=EmulatorConsole,
+        *,
+        motion_hz: float = 25,
     ):
+        if not math.isfinite(motion_hz) or not 25 <= motion_hz <= 50:
+            raise ValueError("运动频率必须为25–50Hz")
         bridge.check_device()
         self.bridge, self.engine = bridge, engine
         self.motion, self.console_factory = motion or DiagnosticWave(), console_factory
+        self.motion_hz, self.period_s = motion_hz, 1 / motion_hz
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.error: Exception | None = None
@@ -201,7 +206,7 @@ class MotionWorker:
                             next_gps = now + 1
                         self.iterations += 1
                         # 不补发堆积的旧传感器事件。
-                        self.stop_event.wait(max(0, 0.04 - (time.monotonic() - now)))
+                        self.stop_event.wait(max(0, self.period_s - (time.monotonic() - now)))
                 finally:
                     console.sensor("acceleration", REST.acceleration)
                     console.sensor("gyroscope", REST.gyroscope)

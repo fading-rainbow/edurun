@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -29,9 +30,12 @@ def replay_diagnostic(
     output: Path,
     seconds: float = 30,
     motion_csv: Path | None = None,
+    motion_hz: float = 25,
 ) -> dict:
     if not 5 <= seconds <= 900:
         raise ValueError("诊断回放时长必须为5–900秒")
+    if not math.isfinite(motion_hz) or not 25 <= motion_hz <= 50:
+        raise ValueError("运动频率必须为25–50Hz")
     if config.baseline[0] != config.baseline[-1]:
         raise ValueError("诊断循环基线路线必须闭合")
     planner = RoutePlanner(config)
@@ -43,7 +47,7 @@ def replay_diagnostic(
     start = time.monotonic()
     engine.set_path(config.baseline, start, repeat=True)
     # 用户若切换到其他App，停止注入，不去抢回前台。
-    with MotionWorker(bridge, engine, motion) as worker:
+    with MotionWorker(bridge, engine, motion, motion_hz=motion_hz) as worker:
         while time.monotonic() - start < seconds:
             foreground = bridge.run("shell", "dumpsys", "activity", "activities")
             if not diagnostic_foreground(foreground):
@@ -79,15 +83,25 @@ def replay_diagnostic(
         and max(sensors[kind].get("observed_axis_spans", [0])) >= span
         for kind, span in [(1, 0.5), (4, 0.01)]
     )
+    rate_target_met = all(
+        sensors.get(kind, {}).get("received_hz", 0) >= motion_hz * 0.9 for kind in (1, 4)
+    )
     result = {
         "diagnostic_only": True,
-        "passed": bool(gps_error is not None and gps_error < 3 and received_motion),
+        "passed": bool(
+            gps_error is not None
+            and gps_error < 3
+            and received_motion
+            and (motion_hz == 25 or rate_target_met)
+        ),
         "elapsed_s": round(time.monotonic() - start, 3),
         "driver_travelled_m": round(state.travelled_m, 3),
         "driver_iterations": iterations,
         "gps_final_error_m": gps_error,
         "received_motion": received_motion,
-        "motion_source": "user_csv_unverified_provenance" if motion_csv else "diagnostic_wave",
+        "motion_source": "csv_unverified_target_acceptance" if motion_csv else "diagnostic_wave",
+        "configured_motion_hz": motion_hz,
+        "motion_rate_target_met": rate_target_met,
         "step_counter_present": 19 in sensors,
         "step_detector_present": 18 in sensors,
         "real_records_submitted": 0,

@@ -10,6 +10,7 @@ from pathlib import Path
 from .android import AVD_NAME, PROJECT_AVD_NAMES, AndroidBridge, EmulatorConsole
 from .editor import serve_editor
 from .models import RouteConfig
+from .motion_data import prepare_realworld
 from .probe import probe
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
@@ -56,7 +57,11 @@ def main() -> int:
     replay.add_argument("--config", type=Path, required=True)
     replay.add_argument("--seconds", type=float, default=30)
     replay.add_argument("--motion-csv", type=Path)
+    replay.add_argument("--motion-hz", type=int, choices=(25, 50), default=25)
     replay.add_argument("--output", type=Path, default=Path(".local/runs/replay.json"))
+    public_motion = commands.add_parser("prepare-public-motion")
+    public_motion.add_argument("--directory", type=Path, default=Path(".local/motion/realworld"))
+    public_motion.add_argument("--seconds", type=int, default=60)
     for name in ("device", "stop", "install", "probe", "inspect-target"):
         sub = commands.add_parser(name)
         sub.add_argument("--serial", required=True)
@@ -106,6 +111,8 @@ def main() -> int:
             }
         elif args.command == "inspect-apk":
             result = apk_metadata(args.apk)
+        elif args.command == "prepare-public-motion":
+            result = prepare_realworld(args.directory, args.seconds)
         elif args.command == "export-qit-routes":
             if ".local" not in args.output.resolve().parts:
                 raise ValueError("真实路线只能导出到忽略的.local目录")
@@ -143,7 +150,7 @@ def main() -> int:
             elif args.command == "replay-diagnostic":
                 config = RouteConfig.model_validate_json(args.config.read_text("utf-8-sig"))
                 result = replay_diagnostic(
-                    bridge, config, args.output, args.seconds, args.motion_csv
+                    bridge, config, args.output, args.seconds, args.motion_csv, args.motion_hz
                 )
             else:
                 result = probe(bridge, args.apk, args.output, args.seconds)

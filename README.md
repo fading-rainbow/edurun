@@ -88,6 +88,9 @@ uv run budao replay-diagnostic --serial emulator-5580 --config .local/routes/rep
 ```
 
 CSV格式为 `t_s,ax,ay,az,gx,gy,gz`；加速度含重力、单位m/s²，陀螺仪rad/s。
+可执行 `uv run budao prepare-public-motion` 准备有官方来源的公开running腰部片段；
+来源、采样时钟、佩戴位置和循环限制见[运动来源说明](docs/motion-provenance.md)。
+新参数`--motion-hz 50`只增加受限诊断采样目标，默认25Hz不变；实际接收及目标App接受仍需单独实测。
 默认波形仅证明数据链路，不是人体跑步或计步。诊断App离开前台时自动停止，不抢回界面。
 30秒设备回放已通过：约75.08m、最终GPS误差0.123m，实际加速度/陀螺仪事件约25Hz。
 这不是乐跑里程、打卡成功或有效记录。
