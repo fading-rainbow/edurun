@@ -15,6 +15,7 @@ from .probe import probe
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
 from .simulation import demo_config, simulate
+from .startup_compat import configure_startup_compat
 from .target import inspect_target
 
 
@@ -62,7 +63,7 @@ def main() -> int:
     public_motion = commands.add_parser("prepare-public-motion")
     public_motion.add_argument("--directory", type=Path, default=Path(".local/motion/realworld"))
     public_motion.add_argument("--seconds", type=int, default=60)
-    for name in ("device", "stop", "install", "probe", "inspect-target"):
+    for name in ("device", "stop", "install", "probe", "inspect-target", "startup-compat"):
         sub = commands.add_parser(name)
         sub.add_argument("--serial", required=True)
         sub.add_argument("--avd", choices=sorted(PROJECT_AVD_NAMES), default=AVD_NAME)
@@ -71,6 +72,10 @@ def main() -> int:
         if name == "probe":
             sub.add_argument("--seconds", type=float, default=12)
             sub.add_argument("--output", type=Path, default=Path(".local/runs/probe.json"))
+        if name == "startup-compat":
+            mode = sub.add_mutually_exclusive_group(required=True)
+            mode.add_argument("--apply", action="store_true")
+            mode.add_argument("--restore", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "editor":
@@ -147,6 +152,12 @@ def main() -> int:
                 result = {"installed_on_project_avd_only": True, "app_not_started": True}
             elif args.command == "inspect-target":
                 result = inspect_target(bridge).model_dump()
+            elif args.command == "startup-compat":
+                result = configure_startup_compat(
+                    bridge,
+                    Path(".local/setup/startup-compat") / f"{bridge.avd_name}.json",
+                    restore=args.restore,
+                )
             elif args.command == "replay-diagnostic":
                 config = RouteConfig.model_validate_json(args.config.read_text("utf-8-sig"))
                 result = replay_diagnostic(

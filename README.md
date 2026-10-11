@@ -29,6 +29,10 @@ uv run budao probe --serial emulator-5580 --apk $build.apk --seconds 15
 pwsh -NoProfile -File scripts/Stop-ExperimentalAVD.ps1
 ```
 
+API34可见启动现在只在运行时使用4GB（原AVD配置不重写），无窗口诊断默认仍为2GB；
+其他变体默认内存不变，可显式传`-MemoryMiB 4096`。停止入口会等待本项目进程/端口退出，
+避免刚发出停止请求便重新启动时碰到端口占用；不会强制结束任何用户进程。
+
 诊断只启动本项目诊断App，写操作同时验证 QEMU 和 AVD 名称。不会操作 USB 真机。
 控制台认证令牌只在内存中用于 localhost，不记录或上传。
 
@@ -92,6 +96,37 @@ API30上的公开腰部running片段已完成60秒独立诊断：加速度/陀�
 
 ## 路线与模型
 
+### 启动故障诊断状态（2026-10-11）
+
+WHPX和RTX4060实际启用；安卓设置页约1.3s可用，而乐跑出现无焦点窗口ANR。
+另有一次RenderThread的fdsan/SIGABRT，不能仅凭该栈认定GPU是唯一原因。
+同数据的host/SwiftShader对照均进入过首页，但重复启动仍有失败。
+系统还记录过WebView后台更新主动停止目标进程，这一次退出不是目标自身崩溃。
+
+已提供显式、可回滚的[官方开发设备非SDK接口策略](https://developer.android.com/guide/app-compatibility/restrictions-non-sdk-interfaces)：
+
+```powershell
+uv run budao startup-compat --serial emulator-5580 --apply
+# 如不再测试，恢复首次保存的原策略
+uv run budao startup-compat --serial emulator-5580 --restore
+```
+
+仅本项目AVD，原策略保存在忽略的`.local/setup/startup-compat/`；不改APK、账号、模拟来源标志，
+不重启App、不点击跑步。policy1保留警告，不使用关闭全部检测/日志的policy0。
+暖启动对照曾连续三次约6s进入首页，切回默认时40s无焦点；但独立冷启动及重应用仍失败，
+因此**这只是诊断开关，不是已验收的修复**；现场已恢复原策略。完整断网对照也仍有启动失败。
+真实账号授权、地图初始化、随机三点及有效跑步均未通过，不自动提交记录。
+
+安卓11/ARM32对照使用运行时4GB、暂时停止该设备QQ/Play商店后台后，三次App启动
+分别约10.5/6.2/6.2s进入可操作首页；整台模拟器重启后约47s进入界面，首次页面请求失败，
+待网络可用点击观察到的“重新加载”后正常显示首页。未改变原APK或复制API34登录数据。
+这是当前可打开的对照环境，不证明唯一故障原因、长期稳定、账号授权或地图/跑步有效。
+启动入口（先停止API34，勿同时运行两台）：
+
+```powershell
+pwsh -NoProfile -File scripts/Start-ExperimentalAVD.ps1 -Variant api30 -Visible -MemoryMiB 4096
+```
+
 ```powershell
 uv run budao editor --port 8765
 # 打开 http://127.0.0.1:8765/，绘制区域/通道/基线或导入单条KML/GPX/GeoJSON
@@ -134,7 +169,8 @@ uv run budao export-qit-routes .local/apks/candidate-qitrun.apk
 - 视觉接口只做HTTP模拟测试，尚未配置或验证真实模型；实际地图锚点和控件选择器尚未采集。
 - 暂未提供真实跑步自动提交入口。登录、地图标定、打卡控件和有效性关卡通过后，再接入完整现场执行循环。
 - 正式乐跑曾在初次检查时不在开放时段；当前时段与账号规则需登录后重新核对。
-  后续先用自由乐跑做有限现场测试；自由乐跑通过不替代正式三点记录验收。
+  用户后来已允许一次正式乐跑，但实际账号时段及初始化仍需核对；该授权尚未使用。
+  自由乐跑通过不替代正式三点记录验收。
 
 ## 重建/回滚
 

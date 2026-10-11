@@ -59,3 +59,22 @@ def test_empty_device_name_fails_closed():
 
     with pytest.raises(ValueError, match="未读取"):
         AndroidBridge("emulator-5582", runner=runner)
+
+
+def test_interactive_api34_memory_override_is_runtime_only():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/Start-ExperimentalAVD.ps1").read_text("utf-8-sig")
+    assert "[ValidateSet(0,2048,3072,4096,6144,8192)][int]$MemoryMiB=0" in text
+    assert "$Visible -and $Variant -eq 'api34'" in text
+    assert "{ 4096 } else { $spec.Ram }" in text
+    assert "'-memory',[string]$ram" in text
+    assert "Set-Content" not in text
+
+
+def test_stop_waits_for_owned_process_and_port_without_force_kill():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "scripts/Stop-ExperimentalAVD.ps1").read_text("utf-8-sig")
+    assert "[regex]::Escape($spec.Name)" in text
+    assert "$i -lt 20" in text
+    assert "if (-not $ports -and -not $owned)" in text
+    assert "Stop-Process" not in text and "taskkill" not in text
