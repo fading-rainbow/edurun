@@ -6,6 +6,8 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Location;
+import android.location.GnssStatus;
+import android.location.OnNmeaMessageListener;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.os.Build;
@@ -33,6 +35,36 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
     private TextView display;
     private String error = "";
     private int motionPeriodUs = 40000;
+    private boolean gnssRegistered;
+    private long gnssStatusCount;
+    private int satellitesTracked, satellitesUsedInFix;
+    private float maxCn0DbHz;
+    private boolean nmeaRegistered;
+    private long nmeaCount;
+    private String ggaTime = "", ggaSatellites = "", rmcTime = "", rmcDate = "", rmcValidity = "";
+    private final OnNmeaMessageListener nmeaListener = new OnNmeaMessageListener() {
+        @Override public void onNmeaMessage(String message, long timestamp) {
+            nmeaCount++;
+            String[] fields = message.trim().split(",", -1);
+            if (fields.length > 9 && fields[0].equals("$GPRMC")) {
+                rmcTime = fields[1]; rmcValidity = fields[2]; rmcDate = fields[9];
+            } else if (fields.length > 7 && fields[0].equals("$GPGGA")) {
+                ggaTime = fields[1]; ggaSatellites = fields[7];
+            }
+        }
+    };
+    private final GnssStatus.Callback gnssCallback = new GnssStatus.Callback() {
+        @Override public void onSatelliteStatusChanged(GnssStatus status) {
+            gnssStatusCount++;
+            satellitesTracked = status.getSatelliteCount();
+            satellitesUsedInFix = 0;
+            maxCn0DbHz = 0;
+            for (int i = 0; i < satellitesTracked; i++) {
+                if (status.usedInFix(i)) satellitesUsedInFix++;
+                maxCn0DbHz = Math.max(maxCn0DbHz, status.getCn0DbHz(i));
+            }
+        }
+    };
     private final LocationListener listener = new LocationListener() {
         @Override public void onLocationChanged(Location location) {
             locations.put(location.getProvider(), new Location(location));
@@ -92,6 +124,10 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
             catch (SecurityException failure) { error = "location permission not granted"; }
             catch (IllegalArgumentException ignored) { /* 不存在的provider不冒充可用 */ }
         }
+        try { gnssRegistered = manager.registerGnssStatusCallback(gnssCallback, handler); }
+        catch (SecurityException failure) { error = "gnss permission not granted"; }
+        try { nmeaRegistered = manager.addNmeaListener(nmeaListener, handler); }
+        catch (SecurityException failure) { error = "nmea permission not granted"; }
         handler.post(snapshot);
     }
 
@@ -128,6 +164,22 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
             output.put("elapsed_realtime_ns", SystemClock.elapsedRealtimeNanos());
             output.put("error", error);
             output.put("requested_motion_period_us", motionPeriodUs);
+            JSONObject gnss = new JSONObject();
+            gnss.put("registered", gnssRegistered);
+            gnss.put("status_callback_count", gnssStatusCount);
+            gnss.put("satellites_tracked", satellitesTracked);
+            gnss.put("satellites_used_in_fix", satellitesUsedInFix);
+            gnss.put("max_cn0_dbhz", maxCn0DbHz);
+            output.put("gnss", gnss);
+            JSONObject nmea = new JSONObject();
+            nmea.put("registered", nmeaRegistered);
+            nmea.put("message_count", nmeaCount);
+            nmea.put("gga_time", ggaTime);
+            nmea.put("gga_satellites", ggaSatellites);
+            nmea.put("rmc_time", rmcTime);
+            nmea.put("rmc_date", rmcDate);
+            nmea.put("rmc_validity", rmcValidity);
+            output.put("nmea", nmea);
             JSONArray available = new JSONArray();
             for (Metric metric : metrics.values()) {
                 JSONObject item = new JSONObject();
@@ -181,6 +233,8 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
         handler.removeCallbacksAndMessages(null);
         sensors.unregisterListener(this);
         manager.removeUpdates(listener);
+        if (gnssRegistered) manager.unregisterGnssStatusCallback(gnssCallback);
+        if (nmeaRegistered) manager.removeNmeaListener(nmeaListener);
         super.onDestroy();
     }
 }
