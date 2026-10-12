@@ -38,6 +38,12 @@ MotionClip会循环片段，来源JSON记录接缝六轴差值；这不是完整
 转换器来源JSON仍代表准备阶段；设备接收结果另存`.local/runs/`，不修改来源证明或上传原始数据。
 实际乐跑接受度、计步和有效性依然未证明。
 
+2026-10-13在独立MuMu实际完成有来源片段的原始通道诊断：5秒两类各251个样本、
+10秒两类各501个样本全量时间戳/三轴匹配，约48.90/48.80Hz；250ms停顿会终止而不追赶。
+清理后顶层NORMAL及普通事件增长均已复核，期间乐跑未运行，没有位置输出或记录提交。
+该新结果仍只说明公开片段接收，不证明用户自身运动、目标步频或完整跑步。
+详见[原始传感器实测](sensor-input.md)。
+
 ```powershell
 # 仅示例，执行前必须结束认证交接并确认诊断前台；不是乐跑启动/提交命令。
 uv run budao replay-diagnostic --serial emulator-5580 --config .local/routes/replay-demo.json --motion-csv .local/motion/realworld/s1-running-waist-60s-50hz.csv --motion-hz 50 --seconds 30

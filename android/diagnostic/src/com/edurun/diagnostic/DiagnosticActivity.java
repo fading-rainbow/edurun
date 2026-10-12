@@ -43,6 +43,7 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
     private Method injectionInit, injectionSend;
     private boolean injecting;
     private int injectionTick;
+    private RawMotionProbe rawMotion;
     private long gnssStatusCount;
     private int satellitesTracked, satellitesUsedInFix;
     private float maxCn0DbHz;
@@ -138,7 +139,12 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
         catch (SecurityException failure) { error = "nmea permission not granted"; }
         handler.post(snapshot);
         // 必须由本项目诊断操作显式请求；默认普通监测不注入任何数据。
-        if (getIntent().getBooleanExtra("probe_injection", false)) {
+        if (getIntent().getBooleanExtra("probe_motion_csv", false)) {
+            rawMotion = new RawMotionProbe(sensors, new File(getFilesDir(), "motion-probe.csv"),
+                getIntent().getBooleanExtra("probe_stall_test", false),
+                getIntent().getStringExtra("motion_probe_request"));
+            handler.postDelayed(() -> rawMotion.start(), 300);
+        } else if (getIntent().getBooleanExtra("probe_injection", false)) {
             handler.postDelayed(() -> beginInjectionProbe(), 300);
         }
     }
@@ -273,6 +279,8 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
             injectionProbe.put("sent_samples", injectedSamples);
             injectionProbe.put("received_samples", receivedProbeSamples);
             output.put("injection_probe", injectionProbe);
+            JSONObject motionReport = rawMotion == null ? null : rawMotion.snapshot();
+            if (motionReport != null) output.put("raw_motion_probe", motionReport);
             JSONObject gnss = new JSONObject();
             gnss.put("registered", gnssRegistered);
             gnss.put("status_callback_count", gnssStatusCount);
@@ -325,7 +333,11 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
             }
             output.put("locations", fixes);
             String text = output.toString(2);
-            display.setText(text);
+            if (motionReport == null) display.setText(text);
+            else display.setText("Raw IMU diagnostic only\nState: " + motionReport.optString("state")
+                + "\nSent rows: " + motionReport.optInt("sent_rows")
+                + "\nReceived callbacks: " + motionReport.optInt("received_sample_count")
+                + "\nFull evidence: private diagnostics.json\nNo steps/run acceptance inferred.");
             File directory = getFilesDir();
             if (directory != null) {
                 File temporary = new File(directory, "diagnostics.json.tmp");
@@ -340,6 +352,7 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
 
     @Override public void onDestroy() {
         if (injecting) finishInjectionProbe("activity_destroyed");
+        if (rawMotion != null) rawMotion.close();
         handler.removeCallbacksAndMessages(null);
         sensors.unregisterListener(this);
         manager.removeUpdates(listener);

@@ -12,7 +12,8 @@ $dex = Join-Path $build 'dex'
 New-Item -ItemType Directory -Path $classes,$dex -Force | Out-Null
 function Check-Exit { if ($LASTEXITCODE -ne 0) { throw "构建命令失败：$LASTEXITCODE" } }
 $source = Join-Path $root 'android\diagnostic\src\com\edurun\diagnostic\DiagnosticActivity.java'
-& "$java\bin\javac.exe" -source 8 -target 8 -encoding UTF-8 -classpath $androidJar -d $classes $source
+$motionSource = Join-Path $root 'android\diagnostic\src\com\edurun\diagnostic\RawMotionProbe.java'
+& "$java\bin\javac.exe" -source 8 -target 8 -encoding UTF-8 -classpath $androidJar -d $classes $source $motionSource
 Check-Exit
 $jar = Join-Path $build 'classes.jar'
 & "$java\bin\jar.exe" cf $jar -C $classes .

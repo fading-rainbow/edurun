@@ -16,6 +16,7 @@ from .mumu import MuMuBridge
 from .planning import plan_saved_snapshot
 from .probe import probe
 from .profiles import preflight_profile, private_file
+from .raw_motion import prepare_recorded_probe, replay_recorded_motion
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
 from .sensor_probe import probe_mumu_sensors
@@ -84,6 +85,18 @@ def main() -> int:
         "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
     )
     raw_sensor.add_argument("--output", type=Path, required=True)
+    mumu_motion = commands.add_parser(
+        "replay-mumu-motion", help="独立MuMu短程公开真实IMU诊断；不驱动位置或提交跑步"
+    )
+    mumu_motion.add_argument(
+        "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
+    )
+    mumu_motion.add_argument(
+        "--csv", type=Path, default=Path(".local/motion/realworld/s1-running-waist-60s-50hz.csv")
+    )
+    mumu_motion.add_argument("--seconds", type=int, choices=range(1, 11), default=5)
+    mumu_motion.add_argument("--stall-test", action="store_true")
+    mumu_motion.add_argument("--output", type=Path, required=True)
     mumu_target = commands.add_parser("inspect-mumu-target", help="只读本项目MuMu上的正式打卡卡片")
     mumu_target.add_argument(
         "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
@@ -158,6 +171,19 @@ def main() -> int:
             result = apk_metadata(args.apk)
         elif args.command == "prepare-public-motion":
             result = prepare_realworld(args.directory, args.seconds)
+        elif args.command == "replay-mumu-motion":
+            output = private_file(Path.cwd(), args.output, must_exist=False)
+            if output.exists():
+                raise ValueError("证据文件已存在，不覆盖旧实验")
+            clip = prepare_recorded_probe(Path.cwd(), args.csv, args.seconds)
+            result = replay_recorded_motion(
+                MuMuBridge(args.receipt), clip, stall_test=args.stall_test
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open("x", encoding="utf-8") as stream:
+                json.dump(result, stream, ensure_ascii=False, indent=2)
+            result = {key: value for key, value in result.items() if key != "snapshot"}
+            result["output"] = str(output)
         elif args.command == "probe-mumu-sensors":
             output = private_file(Path.cwd(), args.output, must_exist=False)
             if output.exists():
