@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .android import AVD_NAME, PROJECT_AVD_NAMES, AndroidBridge, EmulatorConsole
 from .editor import serve_editor
+from .launcher import serve_launcher
 from .models import RouteConfig
 from .motion_data import prepare_realworld
 from .mumu import MuMuBridge
@@ -41,6 +42,13 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     editor = commands.add_parser("editor")
     editor.add_argument("--port", type=int, default=8765)
+    launcher = commands.add_parser("launcher-service", help="本机原生启动助手的配对/准备检查服务")
+    launcher.add_argument(
+        "--profile", type=Path, default=Path(".local/profiles/current/profile.json")
+    )
+    launcher.add_argument(
+        "--config", type=Path, default=Path(".local/launcher/current/service.json")
+    )
     simulate_parser = commands.add_parser("simulate")
     simulate_parser.add_argument("--runs", type=int, default=30)
     simulate_parser.add_argument("--seed", type=int, default=0)
@@ -101,6 +109,9 @@ def main() -> int:
     try:
         if args.command == "editor":
             serve_editor(args.port)
+            return 0
+        elif args.command == "launcher-service":
+            serve_launcher(Path.cwd(), args.profile, args.config)
             return 0
         elif args.command == "simulate":
             if not 1 <= args.runs <= 1000:
