@@ -33,9 +33,33 @@ final class RawMotionProbe implements SensorEventListener {
     private boolean active;
     private int index;
     private long firstSendNs, lastSendNs, maximumGapNs;
+    private boolean leaseRequired;
+    private long leaseDeadlineNs, lastObservationNs;
 
     RawMotionProbe(SensorManager manager, File file, boolean stall, String request) {
         sensors = manager; input = file; stallTest = stall; requestId = request;
+    }
+
+    void requireLease(long observedNs, int ttlMs) {
+        synchronized (lock) {
+            leaseRequired = true;
+            long now = SystemClock.elapsedRealtimeNanos();
+            if (ttlMs < 100 || ttlMs > 2000 || observedNs <= 0 || observedNs > now
+                || now-observedNs > 1_000_000_000L) return;
+            lastObservationNs = observedNs; leaseDeadlineNs = observedNs + ttlMs*1_000_000L;
+        }
+    }
+
+    boolean renewLease(String request, long observedNs, int ttlMs) {
+        synchronized (lock) {
+            if (!active || !leaseRequired || !requestId.equals(request)) return false;
+            long now = SystemClock.elapsedRealtimeNanos();
+            if (now >= leaseDeadlineNs) { finish("lease_expired"); return false; }
+            if (ttlMs < 100 || ttlMs > 2000 || observedNs <= lastObservationNs
+                || observedNs > now || now-observedNs > 1_000_000_000L) return false;
+            lastObservationNs = observedNs; leaseDeadlineNs = observedNs + ttlMs*1_000_000L;
+            return true;
+        }
     }
 
     private void load() throws Exception {
@@ -114,6 +138,7 @@ final class RawMotionProbe implements SensorEventListener {
                 if (!active) return;
                 try {
                     long now = SystemClock.elapsedRealtimeNanos();
+                    if (leaseRequired && now >= leaseDeadlineNs) { finish("lease_expired"); return; }
                     if (lastSendNs > 0) {
                         long gap = now-lastSendNs;
                         maximumGapNs = Math.max(maximumGapNs, gap);
@@ -173,6 +198,7 @@ final class RawMotionProbe implements SensorEventListener {
         synchronized (lock) {
             try {
                 report.put("state", state);
+                report.put("finished_ns", SystemClock.elapsedRealtimeNanos());
                 if (active && init != null) report.put("client_closed", Boolean.TRUE.equals(init.invoke(sensors, false)));
             } catch (Exception failure) {
                 try { report.put("client_closed", false); } catch (Exception ignored) {}
@@ -189,6 +215,8 @@ final class RawMotionProbe implements SensorEventListener {
             try {
                 report.put("sent_rows", index); report.put("first_send_ns", firstSendNs);
                 report.put("last_send_ns", lastSendNs); report.put("maximum_gap_ns", maximumGapNs);
+                report.put("lease_required", leaseRequired); report.put("lease_deadline_ns", leaseDeadlineNs);
+                report.put("last_observation_ns", lastObservationNs);
                 report.put("sent_sample_count", sent.length()); report.put("received_sample_count", received.length());
                 // 回放中不序列化全量原始事件，避免主线程快照/大文本布局阻塞接收队列。
                 // 完成或失败后再输出完整证据；运行中的计数不作为接收验收证明。
@@ -201,5 +229,9 @@ final class RawMotionProbe implements SensorEventListener {
 
     void close() {
         synchronized (lock) { if (active) finish("activity_destroyed"); }
+    }
+
+    void cancel() {
+        synchronized (lock) { if (active) finish("operator_paused"); }
     }
 }

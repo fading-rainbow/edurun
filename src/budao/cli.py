@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .android import AVD_NAME, PROJECT_AVD_NAMES, AndroidBridge, EmulatorConsole
 from .editor import serve_editor
+from .foreground_motion import cross_foreground_probe
 from .launcher import serve_launcher
 from .models import RouteConfig
 from .motion_data import prepare_realworld
@@ -97,6 +98,18 @@ def main() -> int:
     mumu_motion.add_argument("--seconds", type=int, choices=range(1, 11), default=5)
     mumu_motion.add_argument("--stall-test", action="store_true")
     mumu_motion.add_argument("--output", type=Path, required=True)
+    cross = commands.add_parser(
+        "probe-mumu-foreground-motion", help="前台服务+独立UID接收；不打开乐跑、不输出位置"
+    )
+    cross.add_argument(
+        "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
+    )
+    cross.add_argument(
+        "--csv", type=Path, default=Path(".local/motion/realworld/s1-running-waist-60s-50hz.csv")
+    )
+    cross.add_argument("--seconds", type=int, choices=range(1, 11), default=5)
+    cross.add_argument("--withhold-renewal", action="store_true")
+    cross.add_argument("--output", type=Path, required=True)
     mumu_target = commands.add_parser("inspect-mumu-target", help="只读本项目MuMu上的正式打卡卡片")
     mumu_target.add_argument(
         "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
@@ -171,6 +184,19 @@ def main() -> int:
             result = apk_metadata(args.apk)
         elif args.command == "prepare-public-motion":
             result = prepare_realworld(args.directory, args.seconds)
+        elif args.command == "probe-mumu-foreground-motion":
+            output = private_file(Path.cwd(), args.output, must_exist=False)
+            if output.exists():
+                raise ValueError("证据文件已存在，不覆盖旧实验")
+            clip = prepare_recorded_probe(Path.cwd(), args.csv, args.seconds)
+            result = cross_foreground_probe(
+                MuMuBridge(args.receipt), clip, withhold_renewal=args.withhold_renewal
+            )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open("x", encoding="utf-8") as stream:
+                json.dump(result, stream, ensure_ascii=False, indent=2)
+            result = {k: v for k, v in result.items() if k not in {"sender", "receiver"}}
+            result["output"] = str(output)
         elif args.command == "replay-mumu-motion":
             output = private_file(Path.cwd(), args.output, must_exist=False)
             if output.exists():

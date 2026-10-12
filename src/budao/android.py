@@ -57,7 +57,11 @@ class AndroidBridge:
         if process.returncode:
             raise RuntimeError(f"ADB 操作失败：{process.stderr.strip()[:200]}")
         # am start 可在ADB退出码为0时报告不存在的Activity；不能当作成功。
-        if arguments[:3] == ("shell", "am", "start") and re.search(
+        if (
+            arguments[:2] == ("shell", "am")
+            and len(arguments) > 2
+            and arguments[2] in {"start", "startservice", "start-foreground-service"}
+        ) and re.search(
             r"^Error(?::| type \d+(?::|$))",
             process.stdout + "\n" + process.stderr,
             re.MULTILINE,

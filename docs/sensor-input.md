@@ -81,3 +81,37 @@ uv run budao replay-mumu-motion --stall-test --output .local/runs/real-imu-stall
 尚未验收：长时运动租约、原始通道与位置/目标前台观察的组合、乐跑实际步频、
 随机点完整无人值守流程与新的最终成绩。短公开片段实际接收通过不能替代这些关卡，
 也不会增加缺失的标准计步传感器。
+
+### 前台服务、独立UID接收与两秒许可
+
+新增受DUMP调用权限保护的`RawMotionService`，发送App不再必须占据前台。
+独立`com.edurun.receiver`只读App无网络、定位或注入权限，用另一UID在前台采集。
+它在进入DATA_INJECTION模式**之前**就注册了普通监听器，随后仍能收到输入：
+5秒两类各251个源样本全量匹配，约49.37Hz，发送/接收UID不同。
+这证明跨App、既有消费者及前台衔接，不是只在发送App里自回环；
+接收App不是乐跑，仍不能把结果宣称为乐跑步频通过。
+
+- 授权按Android单调观察时间加最多2000ms计，过期观察（超过1秒）、未来/重放观察、
+  错误任务号都不能延长授权。过期任务不能被迟到续期重新激活。
+- 最初逐条查询焦点、接收器、服务等会耗尽第一次许可，64行后停止，**未判完整通过**。
+  改为一次完整设备守卫后的固定只读批量观察，消除重复查询延迟；没有放宽许可期限。
+- 持续六次新观察续期完成251行；不续期时到期停止且无过期后新发送。
+  显式STOP在96行后进入`operator_paused`，所有发送时间戳均早于终止时间。
+- 服务使用START_NOT_STICKY，完成、失效或停止后不自动恢复。最近任务号持久保留，
+  实际重复START和迟到RENEW均未重建旧任务或产生新样本。
+- 实验结束均关闭自有客户端、读取顶层NORMAL，并验证普通事件恢复。
+  没有打开乐跑、GPS输出、账号复制、root/hidden API调整或正式记录提交。
+
+构建/诊断（仍然不是最终用户每次手动执行的产品入口）：
+
+```powershell
+pwsh -NoProfile -File scripts/Build-Diagnostic.ps1
+pwsh -NoProfile -File scripts/Build-Launcher.ps1 -Component receiver
+# 仅通过项目MuMuBridge安装两份自有签名APK；保留原App数据和签名材料。
+uv run budao probe-mumu-foreground-motion --output .local/runs/foreground-new.json
+uv run budao probe-mumu-foreground-motion --withhold-renewal --output .local/runs/expiry-new.json
+```
+
+`ForegroundMotionClient`先在正常模式准备载荷，开始后才接收新观察/STOP；同一任务不重复
+开始。编排调用方仍须先验证正确注入模式和本次目标UI、会话、路线许可。
+尚需长时有界运行与目标MapRun观察的共同许可、目标App实际消费/步频及完整一键执行。

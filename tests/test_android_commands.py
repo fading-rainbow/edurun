@@ -38,6 +38,14 @@ def test_am_start_retains_non_failure_warnings():
     assert bridge.run("shell", "am", "start", "-n", "com.example/.Activity") == output
 
 
+@pytest.mark.parametrize("command", ["startservice", "start-foreground-service"])
+def test_service_error_with_zero_adb_status_is_not_success_or_echoed(command):
+    bridge = bridge_with_result("Error: PRIVATE_SERVICE_PARAMETER permission denied")
+    with pytest.raises(RuntimeError) as error:
+        bridge.run("shell", "am", command, "-n", "com.example/.MissingService")
+    assert "PRIVATE_SERVICE_PARAMETER" not in str(error.value)
+
+
 def test_read_only_output_is_not_interpreted_as_activity_failure():
     output = "Error: historic log line"
     bridge = bridge_with_result(output)
