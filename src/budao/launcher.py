@@ -46,7 +46,12 @@ class PreparationCoordinator:
                     "route",
                     "场地与全部打卡点",
                     "pass" if complete else "not_ready",
-                    "目录与声明通道已检查" if complete else "点目录或通道尚未全部核实",
+                    "目录与声明通道已检查"
+                    if complete
+                    else (
+                        f"可规划历史接近位置{route['app_confirmed_approaches']}个；"
+                        "候选总数/通道尚未全部核实"
+                    ),
                 )
             except (ValueError, OSError):
                 item("route", "场地与全部打卡点", "not_ready", "独立场地配置未就绪")

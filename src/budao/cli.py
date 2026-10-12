@@ -18,6 +18,7 @@ from .planning import plan_saved_snapshot
 from .probe import probe
 from .profiles import preflight_profile, private_file
 from .raw_motion import prepare_recorded_probe, replay_recorded_motion
+from .recorded_site import prepare_recorded_site
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
 from .sensor_probe import probe_mumu_sensors
@@ -118,6 +119,9 @@ def main() -> int:
         "preflight-profile", help="只读本机账号/路线/固定点配置，不连接设备"
     )
     profile.add_argument("--profile", type=Path, required=True)
+    commands.add_parser(
+        "prepare-recorded-site", help="从固定历史实际输入证据装配私有路线草案，不连设备"
+    )
     plan = commands.add_parser("plan-snapshot", help="离线卡片快照生成私有路线建议，不移动或提交")
     for name in ("profile", "snapshot", "position", "output"):
         plan.add_argument("--" + name, type=Path, required=True)
@@ -184,6 +188,8 @@ def main() -> int:
             result = apk_metadata(args.apk)
         elif args.command == "prepare-public-motion":
             result = prepare_realworld(args.directory, args.seconds)
+        elif args.command == "prepare-recorded-site":
+            result = prepare_recorded_site(Path.cwd())
         elif args.command == "probe-mumu-foreground-motion":
             output = private_file(Path.cwd(), args.output, must_exist=False)
             if output.exists():
