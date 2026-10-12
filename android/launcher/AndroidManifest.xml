@@ -5,7 +5,7 @@
     <application android:label="乐跑助手" android:debuggable="true"
         android:allowBackup="false" android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
-        <activity android:name=".LauncherActivity" android:exported="true">
+        <activity android:name=".LauncherActivity" android:exported="true" android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

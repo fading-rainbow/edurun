@@ -9,24 +9,36 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .auth_ui import prepare_current_login
 from .mumu import MuMuBridge
 from .profiles import preflight_profile, private_file
 
 
 class PreparationCoordinator:
-    def __init__(self, root: Path, profile: Path, *, bridge_factory=MuMuBridge):
+    def __init__(
+        self,
+        root: Path,
+        profile: Path,
+        *,
+        bridge_factory=MuMuBridge,
+        login_preparer=prepare_current_login,
+    ):
         self.root, self.profile, self.bridge_factory = root.resolve(), profile, bridge_factory
+        self.login_preparer = login_preparer
         self.lock = threading.Lock()
         self.last_report = {"state": "unchecked", "message": "尚未检查准备条件", "checks": []}
 
     def check(self, photo_ready: bool = False) -> dict:
-        with self.lock:
+        if not self.lock.acquire(blocking=False):
+            return self.status()
+        try:
             checks = []
 
             def item(key, title, state, detail):
                 checks.append({"key": key, "title": title, "state": state, "detail": detail})
 
             route = None
+            bridge = None
             try:
                 route = preflight_profile(self.profile, self.root)
                 complete = route["catalog_complete"] and route["operator_roads_verified"]
@@ -51,9 +63,23 @@ class PreparationCoordinator:
                 item("device", "独立模拟器与权限", "pass", "实例归属、root关闭、实际uid/SDK已核对")
             except Exception:
                 # 超时、传输/JSON错误均不能冒充设备通过，也不回显原始异常。
+                bridge = None
                 item("device", "独立模拟器与权限", "not_ready", "当前实例离线或设备守卫未通过")
-            # 不把QQ/微信已安装、旧登录截图或旧有效记录当成当前OAuth成功。
-            item("login", "乐跑QQ／微信授权", "unknown", "当前登录与授权状态尚未接入实时核验")
+            login = {"state": "unknown"}
+            if bridge is not None:
+                try:
+                    login = self.login_preparer(bridge)
+                except Exception:
+                    pass
+            visible_login = login.get("state") == "logged_in_ui"
+            item(
+                "login",
+                "乐跑QQ／微信授权",
+                "pass" if visible_login else "unknown",
+                "本次已登录界面已核对；服务端授权仍由实际开始流程复核"
+                if visible_login
+                else "当前客户端登录界面未确认；已有会话/必要认证不被覆盖",
+            )
             item("motion", "自然运动输入", "not_ready", "MuMu自然步频尚未实际验收")
             item("runtime", "完整自动流程", "not_ready", "开始、观察、驱动与成绩核验尚未完整接通")
             self.last_report = {
@@ -64,12 +90,23 @@ class PreparationCoordinator:
                 "run_started": False,
                 "records_submitted": 0,
                 "needs_human_verification_if_requested": True,
+                "login_server_auth_proven": False,
             }
             return self.last_report
+        finally:
+            self.lock.release()
 
     def status(self) -> dict:
-        with self.lock:
-            return self.last_report
+        if self.lock.locked():
+            return {
+                "state": "checking",
+                "message": "正在核对当前客户端，请等待本次结果",
+                "checks": [],
+                "ready": False,
+                "run_started": False,
+                "records_submitted": 0,
+            }
+        return self.last_report
 
 
 class LauncherServer(ThreadingHTTPServer):
@@ -151,7 +188,7 @@ class LauncherHandler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeError):
             self.reply(400, {"message": "请求结构不符合要求；不回显输入"})
             return
-        # start不是模拟成功：未通过实际检查时不启动App、不产生位置输出或上传。
+        # 登录准备可正常打开客户端；未通过运行条件时不开始跑步、位置输出或上传。
         report = self.server.coordinator.check(data["photo_ready"])
         self.reply(200 if self.path == "/v1/check" else 409, report)
 

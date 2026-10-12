@@ -74,6 +74,65 @@ def test_device_query_timeout_becomes_not_ready_without_echo(tmp_path):
     assert next(c for c in report["checks"] if c["key"] == "device")["state"] == "not_ready"
 
 
+def test_preparation_uses_this_live_login_result_but_still_blocks_unfinished_runtime(tmp_path):
+    calls = []
+
+    class Device:
+        def check_device(self):
+            pass
+
+    app = PreparationCoordinator(
+        tmp_path,
+        Path(".local/missing.json"),
+        bridge_factory=lambda _: Device(),
+        login_preparer=lambda b: (
+            calls.append(b) or {"state": "logged_in_ui", "server_auth_proven": False}
+        ),
+    )
+    report = app.check(True)
+    assert (
+        len(calls) == 1
+        and next(c for c in report["checks"] if c["key"] == "login")["state"] == "pass"
+    )
+    assert (
+        not report["login_server_auth_proven"] and not report["ready"] and not report["run_started"]
+    )
+    assert report["records_submitted"] == 0
+
+
+def test_repeated_check_does_not_queue_navigation_or_block_status(tmp_path):
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    class Device:
+        def check_device(self):
+            pass
+
+    def prepare(device):
+        calls.append(device)
+        started.set()
+        release.wait(3)
+        return {"state": "logged_in_ui"}
+
+    app = PreparationCoordinator(
+        tmp_path,
+        Path(".local/missing.json"),
+        bridge_factory=lambda _: Device(),
+        login_preparer=prepare,
+    )
+    task = threading.Thread(target=lambda: app.check())
+    task.start()
+    try:
+        assert started.wait(1)
+        assert app.status()["state"] == "checking"
+        assert app.check()["state"] == "checking"
+        assert len(calls) == 1
+    finally:
+        release.set()
+        task.join(3)
+    assert app.status()["state"] == "blocked"
+
+
 @pytest.mark.parametrize("origin", ["http://evil.example", "null", "http://127.0.0.1"])
 def test_browser_origin_cannot_trigger_start(tmp_path, origin):
     with server(tmp_path) as (_app, client):

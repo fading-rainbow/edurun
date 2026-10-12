@@ -67,7 +67,8 @@ public final class LauncherActivity extends Activity {
         start.setOnClickListener(v -> request("/v1/start")); content.addView(start);
         Button inspect = new Button(this); inspect.setText("仅检查准备条件");
         inspect.setOnClickListener(v -> request("/v1/check")); content.addView(inspect);
-        content.addView(text("仅连接这台电脑的本机后台；账号密码不在助手中输入。\n"
+        content.addView(text("核验登录会正常打开乐跑客户端，再返回本助手；不点击开始跑步。\n"
+            + "仅连接这台电脑的本机后台；账号密码不在助手中输入。\n"
             + "准备检查失败不会启动乐跑。本人验证等必要操作出现时暂停等待。", 12, false));
         setContentView(scroll);
     }
