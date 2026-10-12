@@ -28,6 +28,53 @@ class CheckpointCard(StrictModel):
     allocation_remaining_m: int | None = Field(default=None, ge=0, le=100_000)
 
 
+RunControlState = Literal["unknown", "not_started_or_countdown", "running", "paused"]
+
+
+def parse_run_control_state(hierarchy: str) -> RunControlState:
+    """识别已采集的控件组合，不证明当前会话身份，更不授权驱动或点击。"""
+    if "<!DOCTYPE" in hierarchy.upper() or "<!ENTITY" in hierarchy.upper():
+        return "unknown"
+    root = ET.fromstring(hierarchy)
+    visible = [n for n in root.iter("node") if n.get("visible-to-user") == "true"]
+    if any(n.get("package") not in (TARGET, "com.android.systemui") for n in visible):
+        return "unknown"
+    # 遮挡后的背景数字/控件不可作为运行状态。
+    if any(
+        n.get("package") == TARGET
+        and n.get("resource-id")
+        in {
+            TARGET + ":id/" + name
+            for name in ("ad_close", "alert_dialog_content", "dialog_confirm")
+        }
+        for n in visible
+    ):
+        return "unknown"
+
+    def controls(name):
+        return [
+            n
+            for n in visible
+            if n.get("package") == TARGET and n.get("resource-id") == TARGET + ":id/" + name
+        ]
+
+    start = controls("tv_start_pause_continue_run")
+    stop = controls("tv_stoprun")
+    if len(start) != 1 or len(stop) > 1:
+        return "unknown"
+    if any(
+        n.get("class") != "android.widget.ProgressBar" or n.get("enabled") != "true"
+        for n in start + stop
+    ):
+        return "unknown"
+    elapsed = parse_run_metrics(hierarchy)["elapsed_s"]
+    if elapsed is None:
+        return "unknown"
+    if elapsed == 0:
+        return "not_started_or_countdown"
+    return "paused" if stop else "running"
+
+
 def face_verification_required(hierarchy: str) -> bool:
     """只识别现场出现的正式跑步中断提示；不读取摄像头、人脸或认证材料。"""
     root = ET.fromstring(hierarchy)
@@ -113,8 +160,9 @@ class TargetInspection(StrictModel):
     gps_label: str | None = None
     counter_label: str | None = None
     checkpoint_cards: tuple[CheckpointCard, ...] = ()
+    run_control_state: RunControlState = "unknown"
     issues: tuple[str, ...] = ()
-    # 尚未采集真实开始/结束及本次记录ID控件，不能凭这些数值开放驱动或判有效。
+    # 按钮组合不能证明开始事件和本次记录ID，不能凭数值/组合开放驱动或判有效。
     run_started_proven: Literal[False] = False
     record_valid_proven: Literal[False] = False
 
@@ -200,6 +248,7 @@ def inspect_target(
         if face_verification_required(hierarchy):
             return TargetInspection(**base, issues=("human_face_verification_required",))
         metrics = parse_run_metrics(hierarchy)
+        control_state = parse_run_control_state(hierarchy)
     except ET.ParseError:
         return TargetInspection(**base, issues=("malformed_hierarchy",))
     state = (
@@ -212,4 +261,5 @@ def inspect_target(
     except ValueError:
         cards = ()
     base["checkpoint_cards"] = cards
+    base["run_control_state"] = control_state
     return TargetInspection(**base, state=state, **metrics)

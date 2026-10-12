@@ -75,6 +75,10 @@ class Observation(StrictModel):
     distance_m: float = Field(default=0, ge=0)
     record_id: str | None = None
     record_valid: bool = False
+    # 本地正式卡片观察器专用；旧视觉坐标观察保持默认None。
+    checkpoint_name: str | None = Field(default=None, min_length=1, max_length=100)
+    completed_checkpoint_names: tuple[str, ...] | None = Field(default=None, max_length=3)
+    elapsed_s: int | None = Field(default=None, ge=0)
 
     @field_validator("sampled_at")
     @classmethod
