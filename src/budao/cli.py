@@ -12,7 +12,9 @@ from .editor import serve_editor
 from .models import RouteConfig
 from .motion_data import prepare_realworld
 from .mumu import MuMuBridge
+from .planning import plan_saved_snapshot
 from .probe import probe
+from .profiles import preflight_profile
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
 from .simulation import demo_config, simulate
@@ -70,6 +72,13 @@ def main() -> int:
     mumu_target.add_argument(
         "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
     )
+    profile = commands.add_parser(
+        "preflight-profile", help="只读本机账号/路线/固定点配置，不连接设备"
+    )
+    profile.add_argument("--profile", type=Path, required=True)
+    plan = commands.add_parser("plan-snapshot", help="离线卡片快照生成私有路线建议，不移动或提交")
+    for name in ("profile", "snapshot", "position", "output"):
+        plan.add_argument("--" + name, type=Path, required=True)
     for name in ("start-mumu", "stop-mumu"):
         sub = commands.add_parser(name, help="只启动/停止现场凭据确认的项目MuMu，不启动乐跑")
         sub.add_argument(
@@ -147,6 +156,12 @@ def main() -> int:
             }
         elif args.command == "inspect-mumu-target":
             result = inspect_target(MuMuBridge(args.receipt)).model_dump()
+        elif args.command == "preflight-profile":
+            result = preflight_profile(args.profile, Path.cwd())
+        elif args.command == "plan-snapshot":
+            result = plan_saved_snapshot(
+                Path.cwd(), args.profile, args.snapshot, args.position, args.output
+            )
         elif args.command == "start-mumu":
             bridge = MuMuBridge(args.receipt, allow_stopped=True)
             bridge.start_owned()

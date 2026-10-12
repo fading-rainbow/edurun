@@ -66,6 +66,51 @@ uv run budao stop-mumu
 路线编辑器地址为`http://127.0.0.1:8765/`。它是路线准备工具，不是正式跑步开始按钮。
 当前没有`budao run`一键正式执行入口；本机现场实验脚本并非可直接跨账号复用的产品。
 
+### 后台离线预检与路线建议
+
+游戏或其他程序在前台时，可先做以下离线工作；这些命令不连接设备、不启动模拟器、
+不点击App、不移动位置、不读取照片内容，也不提交跑步：
+
+```powershell
+uv run budao preflight-profile --profile .local/profiles/current/profile.json
+uv run budao plan-snapshot `
+  --profile .local/profiles/current/profile.json `
+  --snapshot .local/profiles/current/snapshot.xml `
+  --position .local/profiles/current/position.json `
+  --output .local/profiles/current/proposal-new.json
+```
+
+这些是需要本机配置的入口，不会自动生成可执行校园路线。`profile.json`结构示例：
+
+```json
+{
+  "profile_id": "current",
+  "site_id": "my_campus",
+  "receipt_file": ".local/setup/mumu-owned-instance.json",
+  "route_file": ".local/profiles/current/roads.json",
+  "catalog_file": ".local/profiles/current/catalog.json",
+  "upload_policy": "manual",
+  "operator_roads_verified": false
+}
+```
+
+`roads.json`采用路线编辑器的`RouteConfig`结构：WGS84区域、通道、闭合等待路线、速度及
+里程阈值。`position.json`是`{"lon": 经度, "lat": 纬度}`；必须采用与快照对应的位置，
+不是模型生成坐标。`snapshot.xml`只接受运行卡片快照，不应保存密码/认证页面。
+
+目录字段为`coordinate_system: "WGS84"`、`site_id`、`expected_candidate_count`、
+`candidate_count_verified`及`entries`；每项包含完整`name`、`approach: {lon, lat}`、
+可选`confirmation_evidence`（本机历史确认JSON及同名XML）。`approach`是得到过App确认的
+接近位置，**不冒充精确标记中心**。声明“预计8个”但未核实总数不会判定目录完整。
+
+预检检查配置隔离、声明的设备创建凭据、通道连通性及匹配的两帧历史打卡证据；
+不会把凭据格式通过冒充实际设备身份核验，`ready_for_unattended_run`仍为false。
+离线建议按当前快照的完整名称查目录，不按时间猜测点位；未知点、缺证据、越界或
+人脸提示返回`hold`，未分配返回`observe`。满足结束阈值只返回`review_finish`。
+快照无法证明当前运行状态、暂停状态、会话身份或时效，因此任何建议始终
+`execution_allowed: false`、`upload_allowed: false`，不能直接驱动设备。
+建议中的坐标仅写入新建私有文件，控制台只输出摘要，不覆盖已有文件。
+
 其他电脑从公开仓库开始，只能先验证源码：
 
 ```powershell
@@ -92,6 +137,8 @@ root关闭、同样的显示/性能配置，但不包含QQ会话、乐跑账号�
 目前适配器严格只允许已核对的现场项目实例；**多人管理及未登录模板制作尚未实施**。
 在给其他实例发写命令前，还须扩展并验证其创建凭据、路径、索引、端口、root及实际uid守卫。
 不能改一个JSON名字便把旧实例当独立新设备。
+离线配置为其他账号保留`BudaoRun_profile_<profile_id>`命名空间，但当前实时适配器
+仍不支持这些实例；预检的`live_bridge_supported`会明确返回false。
 
 在约16GB主机上优先逐台启动，不默认同时运行多个3GB实例；镜像留本机，不占用VPS。
 账号密码通过正常登录流程输入，照片和配置留本机，不写源码、Git提交或Cloud任务。
