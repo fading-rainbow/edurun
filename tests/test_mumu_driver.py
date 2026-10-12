@@ -1,0 +1,236 @@
+"""模拟时钟/厂商适配器的线程边界测试，不写模拟器或产生真实记录。"""
+
+import math
+import threading
+
+import pytest
+
+from budao.driver import DriveEngine
+from budao.mumu import LocationAuthorizationExpired, MuMuBridge
+from budao.mumu_driver import MuMuPositionWorker
+from budao.routes import RoutePlanner, distance, interpolate
+from budao.simulation import demo_config
+
+
+class FakeMuMu(MuMuBridge):
+    def __init__(self, clock):
+        self.clock = clock
+        self.locations = []
+        self.guard_delay = 0
+        self.failure = None
+        self.before_authorize = lambda: None
+        self.guard_calls = 0
+
+    def check_device(self):
+        self.guard_calls += 1
+
+    def location_wgs84(self, point, *, authorize, command_timeout_s):
+        self.check_device()
+        self.clock[0] += self.guard_delay
+        self.before_authorize()
+        if authorize() is not True:
+            raise LocationAuthorizationExpired()
+        if self.failure:
+            raise self.failure
+        self.locations.append((point, command_timeout_s))
+
+
+@pytest.fixture
+def setup():
+    clock = [0.0]
+    config = demo_config()
+    engine = DriveEngine(RoutePlanner(config), config.baseline[0])
+    bridge = FakeMuMu(clock)
+    worker = MuMuPositionWorker(bridge, engine, clock=lambda: clock[0])
+    return worker, bridge, clock, config
+
+
+def test_no_path_or_lease_never_outputs_location(setup):
+    worker, bridge, clock, _ = setup
+    worker._tick()
+    clock[0] = 3
+    worker._tick()
+    assert not bridge.locations and worker.commands_acknowledged == 0
+
+
+def test_guarded_clock_updates_coordinate_and_uses_bounded_vendor_command(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker._tick()
+    clock[0] = 1
+    worker._tick()
+    assert worker.commands_acknowledged == 2
+    assert distance(config.baseline[0], worker.last_acknowledged) == pytest.approx(2.5, abs=0.01)
+    assert all(timeout == 1 for _, timeout in bridge.locations)
+
+
+def test_path_endpoint_emitted_once_then_waits_for_app_confirmation(setup):
+    worker, bridge, clock, config = setup
+    target = interpolate(config.baseline[0], config.baseline[1], 3)
+    worker.set_path((config.baseline[0], target), 0)
+    worker._tick()
+    clock[0] = 1.5
+    worker._tick()
+    assert worker.check().path_done and not worker.check().moving
+    assert distance(worker.last_acknowledged, target) < 0.01
+    clock[0] = 2
+    worker._tick()
+    assert len(bridge.locations) == 2
+
+
+def test_expired_observer_lease_stops_and_resume_does_not_catch_up(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker._tick()
+    position = worker.last_acknowledged
+    clock[0] = 20
+    worker._tick()
+    assert not worker.check().moving and len(bridge.locations) == 1
+    worker.renew(20)
+    worker._tick()
+    assert worker.last_acknowledged == position
+    clock[0] = 21
+    worker._tick()
+    assert distance(position, worker.last_acknowledged) == pytest.approx(2.5, abs=0.01)
+
+
+def test_slow_guard_cancels_unissued_tick_rolls_back_and_never_catches_up(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker._tick()
+    bridge.guard_delay = 2
+    clock[0] = 1
+    worker._tick()
+    assert len(bridge.locations) == 1 and worker.engine.position == config.baseline[0]
+    assert worker.engine.total == 0 and not worker.check().moving
+    bridge.guard_delay = 0
+    worker.renew(clock[0])
+    worker._tick()
+    assert worker.last_acknowledged == config.baseline[0]
+
+
+def test_pause_request_during_device_check_cancels_location_before_vendor_write(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    bridge.before_authorize = worker.revoked.set
+    clock[0] = 1
+    worker._tick()
+    assert not bridge.locations and not worker.engine.enabled
+
+
+def test_pause_before_tick_does_not_even_advance_unissued_internal_position(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker.revoked.set()
+    clock[0] = 1
+    worker._tick()
+    assert worker.engine.position == config.baseline[0] and not bridge.locations
+
+
+@pytest.mark.parametrize("sampled", [-1, math.nan, math.inf, 10, 0])
+def test_bad_old_or_repeated_observation_does_not_extend_lease(setup, sampled):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    with pytest.raises(ValueError):
+        worker.renew(sampled)
+    assert not worker.check().moving and not bridge.locations
+
+
+def test_renewing_permission_does_not_advance_the_trajectory(setup):
+    worker, _bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker.renew(1)
+    assert worker.engine.position == config.baseline[0] and worker.engine.total == 0
+
+
+def test_unknown_vendor_result_stops_thread_without_retry_or_claim_of_receiving(setup):
+    worker, bridge, _clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    bridge.failure = TimeoutError("simulated vendor timeout")
+    worker._loop()
+    assert worker.stop_event.is_set() and worker.output_state_unknown
+    assert worker.commands_acknowledged == 0 and worker.last_acknowledged is None
+    with pytest.raises(RuntimeError):
+        worker.check()
+    with pytest.raises(ValueError):
+        worker.renew(1)
+
+
+def test_no_qemu_console_sensors_or_stationary_repeated_output_on_stop(setup):
+    worker, bridge, _clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker.stop()
+    worker._tick()
+    assert not bridge.locations and not worker.engine.enabled
+    with pytest.raises(RuntimeError):
+        worker.start()
+
+
+def test_nonowned_bridge_and_prearmed_core_rejected(setup):
+    worker, bridge, _clock, config = setup
+    with pytest.raises(ValueError):
+        MuMuPositionWorker(object(), worker.engine)
+    worker.set_path(config.baseline, 0)
+    with pytest.raises(ValueError):
+        MuMuPositionWorker(bridge, worker.engine)
+
+
+def test_thread_shutdown_does_not_claim_success_until_thread_is_dead(setup):
+    worker, _bridge, _clock, _config = setup
+
+    class PendingThread:
+        def join(self, timeout):
+            assert timeout == 2
+
+        def is_alive(self):
+            return True
+
+    worker.thread = PendingThread()
+    with pytest.raises(RuntimeError, match="未声称线程已退出"):
+        worker.stop()
+    assert worker.stop_event.is_set() and worker.revoked.is_set()
+
+
+def test_loop_wait_is_bounded_one_hertz_and_does_not_catch_up(setup, monkeypatch):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    bridge.guard_delay = 0.25
+    waits = []
+
+    def wait(delay):
+        waits.append(delay)
+        worker.stop_event.set()
+
+    monkeypatch.setattr(worker.stop_event, "wait", wait)
+    worker._loop()
+    assert waits == [0.75] and len(bridge.locations) == 1
+
+
+def test_real_thread_pause_can_revoke_while_guard_holds_io_lock(setup):
+    worker, bridge, _clock, config = setup
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_guard():
+        entered.set()
+        assert release.wait(2), "Test must release simulated guard"
+
+    bridge.before_authorize = slow_guard
+    worker.set_path(config.baseline, 0, repeat=True)
+    pauser = threading.Thread(target=worker.pause)
+    try:
+        worker.start()
+        assert entered.wait(2)
+        pauser.start()
+        assert worker.revoked.wait(2)
+        release.set()
+        pauser.join(2)
+        assert not pauser.is_alive()
+    finally:
+        release.set()
+        worker.stop()
+        if pauser.ident is not None:
+            pauser.join(2)
+    assert not bridge.locations and not worker.engine.enabled

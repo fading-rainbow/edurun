@@ -1,4 +1,4 @@
-"""独立 MuMu 对照设备。保留原 QEMU 白名单；不复制账号、不接入跑步驱动。"""
+"""独立 MuMu 设备及受守卫的位置输出；不复制账号、不开始或提交跑步。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import math
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import eviltransform
@@ -18,6 +19,10 @@ from .models import GeoPoint
 PLAYER_NAME = "BudaoRun_MuMu"
 # 本任务官方下载、实测 Valid NetEase 签名的6.8.4.0管理器；升级需重新核验。
 MANAGER_SHA256 = "2eff3e9f096b2cddfc4a86955555e636c6e853eba5f54b0bf8b9f2441a1d9dbb"
+
+
+class LocationAuthorizationExpired(RuntimeError):
+    """设备查询完成后移动许可已过期；尚未发送位置命令。"""
 
 
 class MuMuBridge(AndroidBridge):
@@ -75,7 +80,9 @@ class MuMuBridge(AndroidBridge):
         self.adb, self.runner, self.avd_name = adb or default_adb(), runner, PLAYER_NAME
         self.check_device(allow_stopped=allow_stopped)
 
-    def _manager_read(self, *args: str) -> dict:
+    def _manager_read(self, *args: str, timeout_s: float = 15) -> dict:
+        if not math.isfinite(timeout_s) or not 0.05 <= timeout_s <= 15:
+            raise ValueError("管理器调用超时必须在0.05–15秒内")
         stat = self.manager.stat()
         if (stat.st_size, stat.st_mtime_ns) != (
             self.fingerprint.st_size,
@@ -88,7 +95,7 @@ class MuMuBridge(AndroidBridge):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=15,
+            timeout=timeout_s,
             check=False,
         )
         if result.returncode:
@@ -228,12 +235,24 @@ class MuMuBridge(AndroidBridge):
         self.check_device()
         return AndroidBridge.run(self, *arguments, timeout=timeout)
 
-    def location_wgs84(self, point: GeoPoint) -> None:
+    def location_wgs84(
+        self,
+        point: GeoPoint,
+        *,
+        authorize: Callable[[], bool] | None = None,
+        command_timeout_s: float = 15,
+    ) -> None:
         """当前签名版本实测的WGS84→BD09官方输入。命令成功不代表App记录成功。"""
         if not isinstance(point, GeoPoint):
             raise ValueError("位置必须是已验证的WGS84 GeoPoint")
+        if authorize is not None and not callable(authorize):
+            raise ValueError("移动许可必须是可在设备检查后重验的回调")
+        if not math.isfinite(command_timeout_s) or not 0.05 <= command_timeout_s <= 15:
+            raise ValueError("位置命令超时必须在0.05–15秒内")
         self.check_device()
         latitude, longitude = eviltransform.wgs2bd(point.lat, point.lon)
+        if authorize is not None and authorize() is not True:
+            raise LocationAuthorizationExpired("设备检查后移动许可过期；未发送位置命令")
         self._manager_read(
             "control",
             "--vmindex",
@@ -244,6 +263,7 @@ class MuMuBridge(AndroidBridge):
             str(longitude),
             "--latitude",
             str(latitude),
+            timeout_s=command_timeout_s,
         )
 
     def diagnostic_snapshot(self) -> dict:

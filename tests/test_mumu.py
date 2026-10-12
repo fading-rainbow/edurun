@@ -344,3 +344,54 @@ def test_location_cannot_receive_unvalidated_arguments(fixture, point):
     with pytest.raises(ValueError):
         b.location_wgs84(point)
     assert len(fixture["commands"]) == before
+
+
+def test_location_rechecks_authorization_after_device_queries_before_vendor_write(fixture):
+    b = make(fixture)
+    events = []
+    original_check = b.check_device
+
+    def checked():
+        original_check()
+        events.append("device_checked")
+
+    def expired():
+        events.append("authorization_rechecked")
+        return False
+
+    b.check_device = checked
+    with pytest.raises(mumu.LocationAuthorizationExpired):
+        b.location_wgs84(GeoPoint(lon=116.4, lat=39.9), authorize=expired)
+    assert events == ["device_checked", "authorization_rechecked"]
+    assert not any("location" in cmd for cmd in fixture["commands"])
+
+
+@pytest.mark.parametrize("value", [None, 1, "true", [], False])
+def test_location_requires_explicit_true_from_moving_lease(fixture, value):
+    b = make(fixture)
+    with pytest.raises(mumu.LocationAuthorizationExpired):
+        b.location_wgs84(GeoPoint(lon=116.4, lat=39.9), authorize=lambda: value)
+    assert not any("location" in cmd for cmd in fixture["commands"])
+
+
+@pytest.mark.parametrize("timeout", [0, 16, float("nan"), float("inf")])
+def test_location_rejects_unbounded_or_invalid_timeout_before_queries(fixture, timeout):
+    b = make(fixture)
+    before = len(fixture["commands"])
+    with pytest.raises(ValueError):
+        b.location_wgs84(GeoPoint(lon=116.4, lat=39.9), command_timeout_s=timeout)
+    assert len(fixture["commands"]) == before
+
+
+def test_location_propagates_bounded_command_timeout_to_verified_vendor(fixture):
+    b = make(fixture)
+    calls = []
+    runner = b.runner
+
+    def timed(command, **kwargs):
+        calls.append((command, kwargs.get("timeout")))
+        return runner(command, **kwargs)
+
+    b.runner = timed
+    b.location_wgs84(GeoPoint(lon=116.4, lat=39.9), authorize=lambda: True, command_timeout_s=1)
+    assert calls[-1][1] == 1 and "location" in calls[-1][0]
