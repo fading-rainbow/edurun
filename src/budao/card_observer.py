@@ -17,7 +17,7 @@ from .profiles import (
     preflight_profile,
     private_file,
 )
-from .target import RUN_ACTIVITY, TARGET, TargetInspection, inspect_target
+from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, TargetInspection, inspect_target
 
 
 class NamedCardObserver:
@@ -54,7 +54,7 @@ class NamedCardObserver:
             or inspection.state != "metrics"
             or inspection.run_control_state != "running"
             or inspection.counter_label != "已打卡"
-            or inspection.gps_label != "优"
+            or inspection.gps_label != GPS_READY_LABEL
             or inspection.distance_m is None
             or inspection.completed_checkpoints is None
             or inspection.elapsed_s is None

@@ -284,7 +284,7 @@ def test_cli_preflight_never_instantiates_device_bridge(setup, monkeypatch, caps
     assert not json.loads(capsys.readouterr().out)["ready_for_unattended_run"]
 
 
-def snapshot(completed=0, name="测试入口", *, distance="0.10", elapsed="00:00:30", gps="优"):
+def snapshot(completed=0, name="测试入口", *, distance="0.10", elapsed="00:00:30", gps="GPS信号优"):
     rows = "".join(
         node(
             "rl_log_point",

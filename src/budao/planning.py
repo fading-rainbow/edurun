@@ -18,7 +18,12 @@ from .profiles import (
     private_file,
 )
 from .routes import RoutePlanner, path_length
-from .target import face_verification_required, parse_checkpoint_cards, parse_run_metrics
+from .target import (
+    GPS_READY_LABEL,
+    face_verification_required,
+    parse_checkpoint_cards,
+    parse_run_metrics,
+)
 
 
 class RouteProposal(StrictModel):
@@ -52,7 +57,7 @@ def propose_route(
             metrics["distance_m"] is None
             or metrics["elapsed_s"] is None
             or metrics["elapsed_s"] <= 0
-            or metrics["gps_label"] != "优"
+            or metrics["gps_label"] != GPS_READY_LABEL
         ):
             return RouteProposal(action="hold", reason="metrics_not_ready")
         planner = RoutePlanner(config)

@@ -16,6 +16,7 @@ from .ui import AppUI, focused_component
 
 TARGET = "com.lptiyu.tanke"
 RUN_ACTIVITY = TARGET + ".activities.school_run.MapRunActivity"
+GPS_READY_LABEL = "GPS信号优"  # 当前4.3.0实际控件完整文本，不是测试夹具的简写。
 
 
 class CheckpointCard(StrictModel):

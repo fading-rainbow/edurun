@@ -39,6 +39,14 @@ def test_collected_430_metrics_do_not_prove_started_or_valid():
     assert "start_controls_and_current_record_identity_unverified" in value["issues"]
 
 
+def test_actual_full_gps_text_is_preserved_not_fixture_abbreviation():
+    from budao.target import GPS_READY_LABEL
+
+    assert GPS_READY_LABEL == "GPS信号优"
+    assert parse_run_metrics(hierarchy(tv_gps_strength="GPS信号优"))["gps_label"] == GPS_READY_LABEL
+    assert parse_run_metrics(hierarchy(tv_gps_strength="GPS信号弱"))["gps_label"] == "GPS信号弱"
+
+
 def test_kilometres_to_metres_and_duration():
     value = parse_run_metrics(
         hierarchy(tv_distance_value="1.55", chronometer="01:02:03", tv_log_num_value="3")
