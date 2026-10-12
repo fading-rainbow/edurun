@@ -1,0 +1,12 @@
+Original project source is licensed under the MIT License in LICENSE.
+
+The vendored Leaflet 1.9.4 distribution retains its original BSD-2-Clause
+copyright and license in src/budao/web/vendor/LICENSE.leaflet. See
+src/budao/web/THIRD_PARTY.md for provenance and checksums.
+
+Android, Android Studio, MuMu, QQ, WeChat, BudaoRun and QitRun applications,
+APKs, signing materials and emulator images are not distributed in this
+repository. Their names are used only to identify independently installed
+software and compatibility tests.
+
+Python dependencies retain their respective upstream licenses.

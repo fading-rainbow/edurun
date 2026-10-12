@@ -70,8 +70,20 @@ def fixture(tmp_path, monkeypatch):
     def runner(command, **_kwargs):
         state["commands"].append(command)
         if command[0] == str(manager):
-            output = state["info"] if command[1] == "info" else {"root_permission": state["root"]}
+            if command[1] == "control":
+                if command[-1] in {"launch", "shutdown"}:
+                    started = command[-1] == "launch"
+                    state["info"].update(is_process_started=started, is_android_started=started)
+                output = {"errcode": 0}
+            else:
+                output = (
+                    state["info"] if command[1] == "info" else {"root_permission": state["root"]}
+                )
             return SimpleNamespace(returncode=0, stdout=json.dumps(output), stderr="")
+        if command[1:] == ["connect", state["receipt"]["serial"]]:
+            return SimpleNamespace(
+                returncode=0, stdout="connected to " + state["receipt"]["serial"], stderr=""
+            )
         args = command[3:]
         output = ""
         if args == ["shell", "id", "-u"]:
@@ -203,3 +215,91 @@ def test_non_object_receipt_refused_before_device_access(fixture):
     with pytest.raises(ValueError, match="JSON"):
         mumu.MuMuBridge(fixture["path"], runner=fixture["runner"])
     assert not fixture["commands"]
+
+
+def test_stopped_entry_only_launches_exact_owned_index_then_verifies_actual_uid(fixture):
+    fixture["info"].update(is_process_started=False, is_android_started=False)
+    b = mumu.MuMuBridge(fixture["path"], runner=fixture["runner"], allow_stopped=True)
+    assert all(cmd[0] == str(fixture["manager"]) for cmd in fixture["commands"])
+    b.start_owned()
+    controls = [
+        cmd[1:] for cmd in fixture["commands"] if cmd[0] == str(b.manager) and cmd[1] == "control"
+    ]
+    assert controls == [
+        ["control", "--vmindex", "1", "launch"],
+        ["control", "--vmindex", "1", "show_window"],
+    ]
+    assert any(cmd[3:] == ["shell", "id", "-u"] for cmd in fixture["commands"])
+
+
+def test_offline_constructor_does_not_authorize_adb(fixture):
+    fixture["info"].update(is_process_started=False, is_android_started=False)
+    b = mumu.MuMuBridge(fixture["path"], runner=fixture["runner"], allow_stopped=True)
+    with pytest.raises(ValueError):
+        b.run("shell", "input", "keyevent", "4")
+    assert not any("input" in cmd for cmd in fixture["commands"])
+
+
+def test_stop_waits_for_confirmed_owned_shutdown_without_wiping(fixture):
+    b = make(fixture)
+    b.stop_owned()
+    assert not fixture["info"]["is_process_started"]
+    controls = [
+        cmd for cmd in fixture["commands"] if cmd[0] == str(b.manager) and cmd[1] == "control"
+    ]
+    assert controls == [[str(b.manager), "control", "--vmindex", "1", "shutdown"]]
+    assert not any("wipe" in " ".join(cmd) or "all" in cmd for cmd in fixture["commands"])
+
+
+@pytest.mark.parametrize("android,process", [(True, False), (False, True), (None, False)])
+def test_partial_start_or_missing_status_not_accepted_offline(fixture, android, process):
+    fixture["info"].update(is_process_started=process, is_android_started=android)
+    with pytest.raises(ValueError):
+        mumu.MuMuBridge(fixture["path"], runner=fixture["runner"], allow_stopped=True)
+
+
+def test_running_start_does_not_restart_or_duplicate_instance(fixture):
+    b = make(fixture)
+    b.start_owned()
+    assert not any("launch" in cmd or "restart" in cmd for cmd in fixture["commands"])
+    assert any("show_window" in cmd for cmd in fixture["commands"])
+
+
+def test_actual_stopped_info_omits_launch_error_and_adb_fields(fixture):
+    fixture["info"].update(is_process_started=False, is_android_started=False)
+    for key in ("launch_err_code", "adb_host_ip", "adb_port"):
+        fixture["info"].pop(key)
+    b = mumu.MuMuBridge(fixture["path"], runner=fixture["runner"], allow_stopped=True)
+    with pytest.raises(ValueError):
+        b.run("shell", "id", "-u")
+    assert all(cmd[0] == str(fixture["manager"]) for cmd in fixture["commands"])
+
+
+def test_running_info_cannot_omit_launch_status(fixture):
+    fixture["info"].pop("launch_err_code")
+    with pytest.raises(ValueError):
+        make(fixture)
+
+
+def test_start_transport_connects_only_verified_loopback_not_global_server(fixture):
+    b = make(fixture)
+    b.start_owned()
+    connects = [cmd for cmd in fixture["commands"] if len(cmd) > 1 and cmd[1] == "connect"]
+    assert connects == [[str(b.adb), "connect", "127.0.0.1:16416"]]
+    assert not any("kill-server" in cmd or "disconnect" in cmd for cmd in fixture["commands"])
+
+
+def test_connect_revalidates_identity_and_never_attaches_foreign_port(fixture):
+    b = make(fixture)
+    fixture["info"]["adb_port"] = 5555
+    with pytest.raises(ValueError):
+        b._connect_owned_adb()
+    assert not any(len(cmd) > 1 and cmd[1] == "connect" for cmd in fixture["commands"])
+
+
+def test_start_entry_never_waives_actual_uid_for_android_writes(fixture):
+    fixture["uid"] = "0"
+    b = mumu.MuMuBridge(fixture["path"], runner=fixture["runner"], allow_stopped=True)
+    with pytest.raises(ValueError):
+        b.run("shell", "input", "keyevent", "4")
+    assert not any("input" in cmd for cmd in fixture["commands"])

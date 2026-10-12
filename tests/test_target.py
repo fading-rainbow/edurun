@@ -165,3 +165,22 @@ def test_missing_layout_does_not_claim_metrics():
     value = inspect_target(Bridge([focus(), focus()]), lambda _b: ui)
     assert value.state == "unavailable"
     assert value.distance_m is None
+
+
+def test_face_dialog_requires_intervention_without_reading_background_counters():
+    from xml.sax.saxutils import quoteattr
+
+    prompt = "本次跑步需要进行人脸验证\n验证成功后可继续跑步"
+    xml = (
+        "<hierarchy>"
+        f'<node package="{TARGET}" resource-id="{TARGET}:id/alert_dialog_content" '
+        f'text={quoteattr(prompt)} visible-to-user="true"/>'
+        f'<node package="{TARGET}" resource-id="{TARGET}:id/dialog_confirm" '
+        'text="去验证" visible-to-user="true"/>'
+        "</hierarchy>"
+    )
+    ui = SimpleNamespace(device=SimpleNamespace(dump_hierarchy=lambda: xml))
+    value = inspect_target(Bridge([focus(), focus()]), lambda _b: ui)
+    assert value.state == "unavailable"
+    assert value.issues == ("human_face_verification_required",)
+    assert value.distance_m is None and value.completed_checkpoints is None

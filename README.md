@@ -2,6 +2,12 @@
 
 **当前是实验环境、诊断工具和控制核心，不是一键生成有效乐跑记录的成品。**
 
+一次代理调度的正式App流程现已计入有效成绩；**MuMu详情步数仍为0**，无人值守入口及
+多人模板还未完成。真实结果与合成测试严格分开，不能据此保证未来审核。
+完整实现及可用命令见[实现与使用说明](docs/implementation-and-use.md)。
+
+项目原创源码采用[MIT License](LICENSE)，保留[第三方声明](NOTICE)。
+
 完整方案及阶段状态见 [BudaoRun.md](BudaoRun.md)。QitRun静态原理见
 [docs/QitRun-analysis.md](docs/QitRun-analysis.md)。真实路线、APK、配置、截图及密钥均留在 `.local/`，不入库。
 
@@ -55,6 +61,12 @@ API34可见启动现在只在运行时使用4GB（原AVD配置不重写），无
 没有自然运动波形、打卡或有效记录；暂停后仅停止该测试App，没有点击结束/上传。
 详情见[MuMu对照说明](docs/mumu-comparison.md)。
 
+MuMu现已通过用户正常QQ登录及官方授权，进入绑定账号的正式模式。
+正式界面实测为顺序分配：先显示“再跑N米后分配”，再显示打卡点名称、距离及状态。
+本地只读观察器已支持这些卡片，并能识别人脸验证中断；不需要把完整界面发给视觉API。
+本次正式测试已取得App的打卡计数增长，但**仍须以结束后的有效成绩为验收**。
+运动波形与模拟步频在MuMu上尚未验证，不能从GPS里程推断步频正常。
+
 诊断只启动本项目诊断App，写操作同时验证 QEMU 和 AVD 名称。不会操作 USB 真机。
 控制台认证令牌只在内存中用于 localhost，不记录或上传。
 
@@ -83,12 +95,21 @@ API36实际诊断通过（375轮、加速度/陀螺仪约25Hz），仍没有标�
 
 ```powershell
 uv run budao inspect-target --serial emulator-5580
+# MuMu：只允许现场创建凭据确认的项目实例，不接受USB手机serial
+uv run budao inspect-mumu-target --receipt .local/setup/mumu-owned-instance.json
+uv run budao start-mumu
+uv run budao stop-mumu
 ```
 
 仅核对4.3.0/code230的真实MapRunActivity控件：公里→米、用时、已打卡计数及GPS文字。
 缺失/重复/隐藏控件、热量模式、版本不同或读取中切换前台时拒绝猜测。
 QQ登录/密码页不读取界面树或截图；该命令不点击、不移动、不提交、也不调用模型。
 输出的`run_started_proven`及`record_valid_proven`仍为false：读到数字不等于跑步已开始或有效。
+
+`checkpoint_cards`分别输出`pending`、`assigned`、`completed`，编号与正式计数必须一致。
+缺卡、重复/隐藏字段、未知格式或状态矛盾时返回空卡片，不猜测坐标。
+人脸提示返回`human_face_verification_required`；遮挡后的后台数字不得当作当前观察。
+摄像头/裁切页不会由这个只读入口读取，附件目录与`.local/`均在Git忽略范围内。
 
 API34现已进入过MapRunActivity并实际渲染高德底图，但定位仍显示“搜索中”，
 初始化日志有RunHelper空指针，尚未取得可用开始/结束控件或真实记录ID。

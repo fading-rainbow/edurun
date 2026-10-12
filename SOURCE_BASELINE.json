@@ -1,16 +1,22 @@
 {
   "project": "BudaoRun",
   "repository": "fading-rainbow/edurun",
-  "visibility": "private",
+  "visibility": "public",
   "development_branch": "main",
   "source_directory": "E:/edurun",
-  "baseline_date": "2026-10-10",
-  "scope": "validated diagnostics, bounded motion driver, local route editor and controller core; not a complete live running product",
+  "baseline_date": "2026-10-12",
+  "scope": "validated diagnostics, guarded MuMu lifecycle, local formal checkpoint observer, GIS/motion core and one agent-orchestrated current accepted-grade case; not a standalone live runner or proven MuMu gait simulator",
   "production": {
     "deployed": false,
-    "real_running_sessions_started": 0,
-    "real_records_submitted": 0,
-    "effective_record_verified": false
+    "real_running_sessions_started": 3,
+    "formal_running_sessions_started": 1,
+    "free_diagnostic_sessions_started": 2,
+    "actual_human_running_sessions": 0,
+    "real_records_submitted": 1,
+    "effective_record_verified": true,
+    "current_app_grade_only": true,
+    "mumu_natural_step_simulation_verified": false,
+    "standalone_unattended_runner_verified": false
   },
   "cloud": {
     "codex_task_created": false,
@@ -29,5 +35,5 @@
     "uv build (local wheel/sdist)",
     "gitleaks staged source/export scan"
   ],
-  "excluded": [".local/", "APK", "routes with real coordinates", "credentials", "signing materials", "screenshots", "logs", "runtime configuration"]
+  "excluded": [".local/", ".codex-remote-attachments/", "APK", "routes with real coordinates", "credentials", "signing materials", "selfies", "screenshots", "logs", "runtime configuration"]
 }

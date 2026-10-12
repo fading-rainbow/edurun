@@ -66,6 +66,15 @@ def main() -> int:
     public_motion.add_argument("--seconds", type=int, default=60)
     mumu = commands.add_parser("inspect-mumu", help="只读独立MuMu实例及本项目诊断快照")
     mumu.add_argument("--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json"))
+    mumu_target = commands.add_parser("inspect-mumu-target", help="只读本项目MuMu上的正式打卡卡片")
+    mumu_target.add_argument(
+        "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
+    )
+    for name in ("start-mumu", "stop-mumu"):
+        sub = commands.add_parser(name, help="只启动/停止现场凭据确认的项目MuMu，不启动乐跑")
+        sub.add_argument(
+            "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
+        )
     for name in ("device", "stop", "install", "probe", "inspect-target", "startup-compat"):
         sub = commands.add_parser(name)
         sub.add_argument("--serial", required=True)
@@ -136,6 +145,16 @@ def main() -> int:
                 "target_login_verified": False,
                 "formal_record_validated": False,
             }
+        elif args.command == "inspect-mumu-target":
+            result = inspect_target(MuMuBridge(args.receipt)).model_dump()
+        elif args.command == "start-mumu":
+            bridge = MuMuBridge(args.receipt, allow_stopped=True)
+            bridge.start_owned()
+            result = {"project_instance_started": True, "target_app_launch_requested": False}
+        elif args.command == "stop-mumu":
+            bridge = MuMuBridge(args.receipt)
+            bridge.stop_owned()
+            result = {"project_instance_stopped": True, "data_wipe_requested": False}
         elif args.command == "export-qit-routes":
             if ".local" not in args.output.resolve().parts:
                 raise ValueError("真实路线只能导出到忽略的.local目录")

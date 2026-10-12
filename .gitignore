@@ -1,5 +1,6 @@
 .venv/
 .local/
+.codex-remote-attachments/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

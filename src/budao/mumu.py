@@ -7,6 +7,7 @@ import json
 import math
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from .android import DIAGNOSTIC_PACKAGE, AndroidBridge, default_adb
@@ -17,7 +18,14 @@ MANAGER_SHA256 = "2eff3e9f096b2cddfc4a86955555e636c6e853eba5f54b0bf8b9f2441a1d9d
 
 
 class MuMuBridge(AndroidBridge):
-    def __init__(self, receipt: Path, adb: Path | None = None, runner=subprocess.run):
+    def __init__(
+        self,
+        receipt: Path,
+        adb: Path | None = None,
+        runner=subprocess.run,
+        *,
+        allow_stopped: bool = False,
+    ):
         if ".local" not in receipt.resolve().parts:
             raise ValueError("MuMu所有权凭据只能保存在本项目.local目录")
         self.receipt = json.loads(receipt.read_text("utf-8-sig"))
@@ -62,7 +70,7 @@ class MuMuBridge(AndroidBridge):
                 raise ValueError("MuMu管理器不是已验证的签名版本")
         self.fingerprint = self.manager.stat()
         self.adb, self.runner, self.avd_name = adb or default_adb(), runner, PLAYER_NAME
-        self.check_device()
+        self.check_device(allow_stopped=allow_stopped)
 
     def _manager_read(self, *args: str) -> dict:
         stat = self.manager.stat()
@@ -87,7 +95,9 @@ class MuMuBridge(AndroidBridge):
             raise RuntimeError("MuMu管理器未返回可信设备信息")
         return value
 
-    def check_device(self) -> None:
+    def check_device(self, *, allow_stopped: bool = False) -> None:
+        if type(allow_stopped) is not bool:
+            raise ValueError("离线启动选项必须是布尔值")
         r = self.receipt
         metadata = json.loads((self.vm_directory / "configs/extra_config.json").read_text("utf-8"))
         if (
@@ -103,12 +113,7 @@ class MuMuBridge(AndroidBridge):
             "index": str(r["index"]),
             "created_timestamp": r["created_timestamp"],
             "android_version": "12.0",
-            "adb_host_ip": "127.0.0.1",
-            "adb_port": self.port,
-            "is_android_started": True,
-            "is_process_started": True,
             "error_code": 0,
-            "launch_err_code": 0,
         }
         if any(info.get(k) != v for k, v in expected.items()):
             raise ValueError("MuMu设备离线、启动失败或所有权/ADB端口不匹配")
@@ -117,10 +122,102 @@ class MuMuBridge(AndroidBridge):
         )
         if settings.get("root_permission") != "false":
             raise ValueError("对照设备必须保持官方root关闭状态")
+        running = info.get("is_android_started") is True and info.get("is_process_started") is True
+        if not running:
+            if (
+                not allow_stopped
+                or info.get("is_android_started") is not False
+                or info.get("is_process_started") is not False
+            ):
+                raise ValueError("MuMu未启动或仍在部分启动/退出状态")
+            if info.get("launch_err_code") not in (None, 0):
+                raise ValueError("离线实例仍有启动错误")
+            # 离线入口只允许官方管理器启动。所有ADB调用仍会执行默认的完整在线检查。
+            return
+        if info.get("launch_err_code") != 0:
+            raise ValueError("已运行实例未提供无错误启动状态")
+        if info.get("adb_host_ip") != "127.0.0.1" or info.get("adb_port") != self.port:
+            raise ValueError("实时ADB地址与项目凭据不匹配")
+        if allow_stopped:
+            # 启动/接回SDK transport前只验证归属；不是ADB操作授权。
+            # run()从不传该选项，仍要求真实uid/SDK在线检查。
+            return
         uid = AndroidBridge.run(self, "shell", "id", "-u")
         sdk = AndroidBridge.run(self, "shell", "getprop", "ro.build.version.sdk")
         if uid != "2000" or sdk != "32":
             raise ValueError("实际ADB权限或Android版本不符合对照环境")
+
+    def _connect_owned_adb(self) -> None:
+        self.check_device(allow_stopped=True)
+        info = self._manager_read("info", "--vmindex", str(self.receipt["index"]))
+        expected = {
+            "name": PLAYER_NAME,
+            "index": str(self.receipt["index"]),
+            "created_timestamp": self.receipt["created_timestamp"],
+            "android_version": "12.0",
+            "is_android_started": True,
+            "is_process_started": True,
+            "adb_host_ip": "127.0.0.1",
+            "adb_port": self.port,
+            "error_code": 0,
+            "launch_err_code": 0,
+        }
+        if any(info.get(k) != v for k, v in expected.items()):
+            raise ValueError("连接前项目实例/本机端口身份不匹配")
+        result = self.runner(
+            [str(self.adb), "connect", self.serial],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+        if result.returncode or result.stdout.strip() not in {
+            "connected to " + self.serial,
+            "already connected to " + self.serial,
+        }:
+            raise RuntimeError("尚未接回SDK到项目本机ADB端口；不改其他设备连接")
+
+    def start_owned(self, timeout_s: float = 120) -> None:
+        if not math.isfinite(timeout_s) or not 1 <= timeout_s <= 180:
+            raise ValueError("启动等待范围为1–180秒")
+        self.check_device(allow_stopped=True)
+        index = str(self.receipt["index"])
+        info = self._manager_read("info", "--vmindex", index)
+        if info.get("is_process_started") is False:
+            self.check_device(allow_stopped=True)
+            self._manager_read("control", "--vmindex", index, "launch")
+        deadline = time.monotonic() + timeout_s
+        transport_connected = False
+        while True:
+            try:
+                if not transport_connected:
+                    self._connect_owned_adb()
+                    transport_connected = True
+                self.check_device()
+                break
+            except (ValueError, RuntimeError):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("项目MuMu启动后仍未通过完整在线检查；未启动乐跑") from None
+                time.sleep(1)
+        self._manager_read("control", "--vmindex", index, "show_window")
+
+    def stop_owned(self, timeout_s: float = 90) -> None:
+        if not math.isfinite(timeout_s) or not 1 <= timeout_s <= 180:
+            raise ValueError("退出等待范围为1–180秒")
+        self.check_device()
+        index = str(self.receipt["index"])
+        self._manager_read("control", "--vmindex", index, "shutdown")
+        deadline = time.monotonic() + timeout_s
+        while True:
+            info = self._manager_read("info", "--vmindex", index)
+            if info.get("is_process_started") is False and info.get("is_android_started") is False:
+                self.check_device(allow_stopped=True)
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError("已请求本项目实例退出，但尚未确认停止；未强杀其他程序")
+            time.sleep(1)
 
     def run(self, *arguments: str, timeout: float = 15) -> str:
         if not arguments or arguments[0] in {"emu", "connect", "disconnect", "kill-server"}:
