@@ -104,6 +104,15 @@ def test_wrong_host_and_large_requests_rejected(tmp_path):
         assert client.post("/v1/start", headers=headers(), content=b"x" * 2049).status_code == 400
 
 
+@pytest.mark.parametrize("size", [2049, 4096, 65536])
+def test_rejected_small_oversize_body_is_drained_without_start_or_reset(tmp_path, size):
+    with server(tmp_path) as (_app, client):
+        for _ in range(5):
+            response = client.post("/v1/start", headers=headers(), content=b"x" * size)
+            assert response.status_code == 400
+        assert _app.coordinator.status()["state"] == "unchecked"
+
+
 def test_native_client_is_loopback_only_and_does_not_handle_account_credentials():
     root = Path(__file__).resolve().parents[1]
     source = (root / "android/launcher/src/com/edurun/launcher/LauncherActivity.java").read_text(

@@ -15,9 +15,10 @@ from .motion_data import prepare_realworld
 from .mumu import MuMuBridge
 from .planning import plan_saved_snapshot
 from .probe import probe
-from .profiles import preflight_profile
+from .profiles import preflight_profile, private_file
 from .replay import replay_diagnostic
 from .routes import RoutePlanner, import_track, path_length
+from .sensor_probe import probe_mumu_sensors
 from .simulation import demo_config, simulate
 from .startup_compat import configure_startup_compat
 from .target import inspect_target
@@ -76,6 +77,13 @@ def main() -> int:
     public_motion.add_argument("--seconds", type=int, default=60)
     mumu = commands.add_parser("inspect-mumu", help="只读独立MuMu实例及本项目诊断快照")
     mumu.add_argument("--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json"))
+    raw_sensor = commands.add_parser(
+        "probe-mumu-sensors", help="独立MuMu有界原始传感器实验；要求乐跑进程已停止"
+    )
+    raw_sensor.add_argument(
+        "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
+    )
+    raw_sensor.add_argument("--output", type=Path, required=True)
     mumu_target = commands.add_parser("inspect-mumu-target", help="只读本项目MuMu上的正式打卡卡片")
     mumu_target.add_argument(
         "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
@@ -150,6 +158,16 @@ def main() -> int:
             result = apk_metadata(args.apk)
         elif args.command == "prepare-public-motion":
             result = prepare_realworld(args.directory, args.seconds)
+        elif args.command == "probe-mumu-sensors":
+            output = private_file(Path.cwd(), args.output, must_exist=False)
+            if output.exists():
+                raise ValueError("证据文件已存在，不覆盖旧实验")
+            result = probe_mumu_sensors(MuMuBridge(args.receipt))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open("x", encoding="utf-8") as stream:
+                json.dump(result, stream, ensure_ascii=False, indent=2)
+            result = {key: value for key, value in result.items() if key != "snapshot"}
+            result["output"] = str(output)
         elif args.command == "inspect-mumu":
             bridge = MuMuBridge(args.receipt)
             snapshot = bridge.diagnostic_snapshot()

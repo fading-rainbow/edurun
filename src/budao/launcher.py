@@ -118,7 +118,13 @@ class LauncherHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 2048 or self.headers.get("Transfer-Encoding") is not None:
+            transfer = self.headers.get("Transfer-Encoding")
+            if not 0 < size <= 2048 or transfer is not None:
+                # Windows上带未读请求体直接关闭会RST，丢掉本来已发送的400。
+                # 只限时丢弃小型、已声明长度的拒绝体；不解析，也不无限吞大请求。
+                if transfer is None and 0 < size <= 65536:
+                    self.connection.settimeout(1)
+                    self.rfile.read(size)
                 raise ValueError
             self.connection.settimeout(5)
             body = self.rfile.read(size)

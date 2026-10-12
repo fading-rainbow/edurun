@@ -20,6 +20,7 @@ import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.json.JSONArray;
@@ -36,6 +37,12 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
     private String error = "";
     private int motionPeriodUs = 40000;
     private boolean gnssRegistered;
+    private JSONObject injectionApi;
+    private JSONObject injectionProbe = new JSONObject();
+    private JSONArray injectedSamples = new JSONArray(), receivedProbeSamples = new JSONArray();
+    private Method injectionInit, injectionSend;
+    private boolean injecting;
+    private int injectionTick;
     private long gnssStatusCount;
     private int satellitesTracked, satellitesUsedInFix;
     private float maxCn0DbHz;
@@ -98,6 +105,7 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
         scroll.addView(display);
         setContentView(scroll);
         sensors = (SensorManager) getSystemService(SENSOR_SERVICE);
+        injectionApi = inspectInjectionApi();
         manager = (LocationManager) getSystemService(LOCATION_SERVICE);
         int requestedPeriod = getIntent().getIntExtra("motion_period_us", 40000);
         if (requestedPeriod >= 20000 && requestedPeriod <= 40000) {
@@ -129,9 +137,106 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
         try { nmeaRegistered = manager.addNmeaListener(nmeaListener, handler); }
         catch (SecurityException failure) { error = "nmea permission not granted"; }
         handler.post(snapshot);
+        // 必须由本项目诊断操作显式请求；默认普通监测不注入任何数据。
+        if (getIntent().getBooleanExtra("probe_injection", false)) {
+            handler.postDelayed(() -> beginInjectionProbe(), 300);
+        }
+    }
+
+    private void beginInjectionProbe() {
+        try {
+            injectionProbe.put("synthetic_diagnostic_only", true);
+            injectionProbe.put("state", "initializing");
+            injectionInit = SensorManager.class.getMethod("initDataInjection", boolean.class);
+            injectionSend = SensorManager.class.getMethod("injectSensorData",
+                Sensor.class, float[].class, int.class, long.class);
+            injecting = Boolean.TRUE.equals(injectionInit.invoke(sensors, true));
+            injectionProbe.put("initialized", injecting);
+            if (!injecting) { injectionProbe.put("state", "not_supported"); return; }
+            handler.post(injectionSample);
+        } catch (Exception failure) {
+            finishInjectionProbe("api_rejected");
+        }
+    }
+
+    /** 一秒、25Hz、有界小幅测试信号；不是自然步伐，更不会生成18/19计步传感器。 */
+    private final Runnable injectionSample = new Runnable() {
+        @Override public void run() {
+            if (!injecting) return;
+            try {
+                int[] types = {Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE};
+                float variation = (float) (0.5 * Math.sin(injectionTick * Math.PI / 2));
+                for (int type : types) {
+                    Sensor sensor = sensors.getDefaultSensor(type);
+                    if (sensor == null) { finishInjectionProbe("sensor_missing"); return; }
+                    float[] values = type == Sensor.TYPE_ACCELEROMETER
+                        ? new float[]{0.1f, 9.8f + variation, 0.2f}
+                        : new float[]{0, 0, variation * 0.04f};
+                    long timestamp = SystemClock.elapsedRealtimeNanos();
+                    boolean accepted = Boolean.TRUE.equals(injectionSend.invoke(sensors,
+                        sensor, values, SensorManager.SENSOR_STATUS_ACCURACY_HIGH, timestamp));
+                    if (!accepted) { finishInjectionProbe("send_rejected"); return; }
+                    injectedSamples.put(probeSample(type, timestamp, values));
+                }
+                if (++injectionTick >= 25) {
+                    // 留出接收回调时间；单独关闭客户端并不证明HAL已恢复NORMAL。
+                    handler.postDelayed(() -> finishInjectionProbe("completed"), 200);
+                } else handler.postDelayed(this, 40);
+            } catch (Exception failure) { finishInjectionProbe("api_rejected"); }
+        }
+    };
+
+    private static JSONObject probeSample(int type, long timestamp, float[] values) throws Exception {
+        JSONObject result = new JSONObject();
+        result.put("type", type); result.put("timestamp_ns", timestamp);
+        JSONArray vector = new JSONArray(); for (float value : values) vector.put(value);
+        result.put("values", vector); return result;
+    }
+
+    private void finishInjectionProbe(String state) {
+        handler.removeCallbacks(injectionSample);
+        try {
+            injectionProbe.put("state", state);
+            if (injecting && injectionInit != null) {
+                injectionProbe.put("client_closed", Boolean.TRUE.equals(injectionInit.invoke(sensors, false)));
+            }
+        } catch (Exception failure) {
+            try { injectionProbe.put("client_closed", false); } catch (Exception ignored) {}
+        } finally { injecting = false; }
+    }
+
+    /** 仅探测当前系统允许访问的方法；不调用、不放宽hidden API或更改传感器模式。 */
+    private JSONObject inspectInjectionApi() {
+        JSONObject result = new JSONObject();
+        try {
+            result.put("probe_only", true);
+            result.put("mode_changed", false);
+            String[] names = {"initDataInjection", "injectSensorData"};
+            Class<?>[][] parameters = {{boolean.class},
+                {Sensor.class, float[].class, int.class, long.class}};
+            for (int i = 0; i < names.length; i++) {
+                try {
+                    SensorManager.class.getMethod(names[i], parameters[i]);
+                    result.put(names[i], "available");
+                } catch (NoSuchMethodException failure) {
+                    result.put(names[i], "not_accessible");
+                } catch (SecurityException failure) {
+                    result.put(names[i], "permission_denied");
+                }
+            }
+        } catch (Exception failure) {
+            // 不保存异常参数或栈；失败不冒充支持。
+        }
+        return result;
     }
 
     @Override public void onSensorChanged(SensorEvent event) {
+        if (injecting && receivedProbeSamples.length() < 1024
+            && (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER
+                || event.sensor.getType() == Sensor.TYPE_GYROSCOPE)) {
+            try { receivedProbeSamples.put(probeSample(event.sensor.getType(), event.timestamp, event.values)); }
+            catch (Exception ignored) {}
+        }
         Metric metric = metrics.get(event.sensor.getType());
         if (metric == null) return;
         metric.count++;
@@ -164,6 +269,10 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
             output.put("elapsed_realtime_ns", SystemClock.elapsedRealtimeNanos());
             output.put("error", error);
             output.put("requested_motion_period_us", motionPeriodUs);
+            output.put("injection_api", injectionApi);
+            injectionProbe.put("sent_samples", injectedSamples);
+            injectionProbe.put("received_samples", receivedProbeSamples);
+            output.put("injection_probe", injectionProbe);
             JSONObject gnss = new JSONObject();
             gnss.put("registered", gnssRegistered);
             gnss.put("status_callback_count", gnssStatusCount);
@@ -230,6 +339,7 @@ public final class DiagnosticActivity extends Activity implements SensorEventLis
     }
 
     @Override public void onDestroy() {
+        if (injecting) finishInjectionProbe("activity_destroyed");
         handler.removeCallbacksAndMessages(null);
         sensors.unregisterListener(this);
         manager.removeUpdates(listener);
