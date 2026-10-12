@@ -10,7 +10,10 @@ import subprocess
 import time
 from pathlib import Path
 
+import eviltransform
+
 from .android import DIAGNOSTIC_PACKAGE, AndroidBridge, default_adb
+from .models import GeoPoint
 
 PLAYER_NAME = "BudaoRun_MuMu"
 # 本任务官方下载、实测 Valid NetEase 签名的6.8.4.0管理器；升级需重新核验。
@@ -224,6 +227,24 @@ class MuMuBridge(AndroidBridge):
             raise ValueError("不能把MuMu适配器用于QEMU控制台或全局ADB控制")
         self.check_device()
         return AndroidBridge.run(self, *arguments, timeout=timeout)
+
+    def location_wgs84(self, point: GeoPoint) -> None:
+        """当前签名版本实测的WGS84→BD09官方输入。命令成功不代表App记录成功。"""
+        if not isinstance(point, GeoPoint):
+            raise ValueError("位置必须是已验证的WGS84 GeoPoint")
+        self.check_device()
+        latitude, longitude = eviltransform.wgs2bd(point.lat, point.lon)
+        self._manager_read(
+            "control",
+            "--vmindex",
+            str(self.receipt["index"]),
+            "tool",
+            "location",
+            "--longitude",
+            str(longitude),
+            "--latitude",
+            str(latitude),
+        )
 
     def diagnostic_snapshot(self) -> dict:
         # 只读取本项目可调试App；绝不读取QQ、乐跑或系统账号数据目录。

@@ -7,6 +7,7 @@ import pytest
 
 from budao import mumu
 from budao.android import AndroidBridge
+from budao.models import GeoPoint
 
 
 @pytest.fixture
@@ -303,3 +304,43 @@ def test_start_entry_never_waives_actual_uid_for_android_writes(fixture):
     with pytest.raises(ValueError):
         b.run("shell", "input", "keyevent", "4")
     assert not any("input" in cmd for cmd in fixture["commands"])
+
+
+def test_public_wgs84_output_uses_measured_vendor_coordinate_profile(fixture):
+    import eviltransform
+
+    b = make(fixture)
+    point = GeoPoint(lat=39.9, lon=116.4)  # Generic test coordinate, not a user's actual route.
+    latitude, longitude = eviltransform.wgs2bd(point.lat, point.lon)
+    b.location_wgs84(point)
+    assert fixture["commands"][-1] == [
+        str(b.manager),
+        "control",
+        "--vmindex",
+        "1",
+        "tool",
+        "location",
+        "--longitude",
+        str(longitude),
+        "--latitude",
+        str(latitude),
+    ]
+    assert not any("am" in cmd or "shake" in cmd for cmd in fixture["commands"])
+
+
+@pytest.mark.parametrize("key,value", [("root", "true"), ("uid", "0"), ("sdk", "35")])
+def test_location_rechecks_actual_permissions_before_each_write(fixture, key, value):
+    b = make(fixture)
+    fixture[key] = value
+    with pytest.raises(ValueError):
+        b.location_wgs84(GeoPoint(lat=39.9, lon=116.4))
+    assert not any("location" in cmd for cmd in fixture["commands"])
+
+
+@pytest.mark.parametrize("point", [None, {"lon": 116.4, "lat": 39.9}, (116.4, 39.9)])
+def test_location_cannot_receive_unvalidated_arguments(fixture, point):
+    b = make(fixture)
+    before = len(fixture["commands"])
+    with pytest.raises(ValueError):
+        b.location_wgs84(point)
+    assert len(fixture["commands"]) == before

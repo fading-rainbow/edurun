@@ -11,6 +11,7 @@ dependencies = [
   "adbutils>=2.9,<3", "uiautomator2>=3,<4", "shapely>=2,<3",
   "networkx>=3,<4", "pyproj>=3,<4", "geographiclib>=2,<3",
   "pydantic>=2,<3", "httpx>=0.28,<1", "pillow>=11,<13", "numpy>=2,<3",
+  "eviltransform==0.1.1",
 ]
 
 [dependency-groups]

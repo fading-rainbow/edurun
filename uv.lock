@@ -52,6 +52,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "adbutils" },
+    { name = "eviltransform" },
     { name = "geographiclib" },
     { name = "httpx" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -75,6 +76,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "adbutils", specifier = ">=2.9,<3" },
+    { name = "eviltransform", specifier = "==0.1.1" },
     { name = "geographiclib", specifier = ">=2,<3" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "networkx", specifier = ">=3,<4" },
@@ -217,6 +219,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/5a/d3/8ae2869247df154b6
 wheels = [
     { url = "https://files.pythonhosted.org/packages/02/c3/253a89ee03fc9b9682f1541728eb66db7db22148cd94f89ab22528cd1e1b/deprecation-2.1.0-py2.py3-none-any.whl", hash = "sha256:a10811591210e1fb0e768a8c25517cabeabcba6f0bf96564f8ff45189f90b14a", size = 11178, upload-time = "2020-04-20T14:23:36.581Z" },
 ]
+
+[[package]]
+name = "eviltransform"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/a2/d48e4513355c92a3207ff2a855d5eb840b15d9e8d93e7ead0f27be1df104/eviltransform-0.1.1.tar.gz", hash = "sha256:e49c287a7ce5f5d9244e9420627fe33d020666d632ad4aee0f5ab530f70e1306", size = 1758, upload-time = "2018-01-02T11:16:58.91Z" }
 
 [[package]]
 name = "geographiclib"
