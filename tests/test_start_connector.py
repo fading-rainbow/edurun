@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from test_runtime import frame
 
+from budao.foreground_motion import ForegroundMotionClient
 from budao.mumu import MuMuBridge
 from budao.start_connector import CAPTURE_GUARD, CAPTURE_MOTION_TAIL, RunCapture, StartConnector
 from budao.target import RUN_ACTIVITY, TARGET
@@ -104,12 +105,14 @@ class BatchDevice(Device):
         self.version, self.uptime, self.changed, self.nonce = version, uptime, changed, nonce
         self.calls = []
 
-    def run(self, *args):
+    def run(self, *args, **kwargs):
         self.calls.append(args)
+        if "authorize" in kwargs:
+            assert kwargs["authorize"]() is True
         f = super().run(*args)
         if args == ("shell", CAPTURE_GUARD):
             return f + f"\n__EDURUN_PACKAGE__\nversionName={self.version}\nversionCode=230"
-        if args == ("shell", CAPTURE_MOTION_TAIL):
+        if args == ("shell", CAPTURE_MOTION_TAIL) or "MOTION_RENEW" in args[-1]:
             if self.changed:
                 f = "mCurrentFocus=Window{123 u0 com.tencent.mobileqq/.LoginActivity}"
             return (
@@ -165,3 +168,73 @@ def test_invalid_motion_task_does_not_reach_device(value):
     with pytest.raises(ValueError, match="任务标记"):
         batch_connector(device).capture(motion_request=value)
     assert not device.calls
+
+
+def test_merged_renewal_only_after_allowed_frame_and_device_guard():
+    device = BatchDevice()
+    connector = batch_connector(device)
+    client = ForegroundMotionClient(device, "b" * 32)
+    client.started = True
+    # Synthetic control is not running/paused: authorization alone cannot make it eligible.
+    connector.capture(
+        motion_request=client.request, renew_motion=client, authorize_motion=lambda _: True
+    )
+    assert device.calls[-1] == ("shell", CAPTURE_MOTION_TAIL)
+    from test_checkpoint_cards import row
+    from test_target import hierarchy
+
+    buttons = "".join(
+        f'<node package="{TARGET}" resource-id="{TARGET}:id/{name}" '
+        'class="android.widget.ProgressBar" enabled="true" visible-to-user="true"/>'
+        for name in ("tv_start_pause_continue_run", "tv_stoprun")
+    )
+    connector.ui.device.dump_hierarchy = lambda: hierarchy(
+        tv_gps_strength="GPS信号优", chronometer="00:01:00"
+    ).replace("</hierarchy>", row("待分配(再跑123米后分配打卡点)") + buttons + "</hierarchy>")
+    result = connector.capture(
+        motion_request=client.request, renew_motion=client, authorize_motion=lambda _: True
+    )
+    assert result.frame.inspection.run_control_state == "paused"
+    assert "MOTION_RENEW" in device.calls[-1][-1]
+    assert "grep -c" in device.calls[-1][-1] and "motion_lease_ms 2000" in device.calls[-1][-1]
+    connector.capture(
+        motion_request=client.request, renew_motion=client, authorize_motion=lambda _: False
+    )
+    assert device.calls[-1] == ("shell", CAPTURE_MOTION_TAIL)
+
+
+def test_merged_renewal_cannot_use_different_device_nonce_or_slow_pixels():
+    device = BatchDevice()
+    connector = batch_connector(device)
+    client = ForegroundMotionClient(device, "b" * 32)
+    client.started = True
+    for args in ({"motion_request": "c" * 32}, {"motion_request": client.request, "pixels": True}):
+        with pytest.raises(ValueError, match="同一设备"):
+            connector.capture(**args, renew_motion=client, authorize_motion=lambda _: True)
+    assert not device.calls
+
+
+@pytest.mark.parametrize("overlay", ["ad", "face"])
+def test_merged_capture_never_renews_through_ad_or_human_verification(overlay):
+    from test_target import hierarchy
+
+    device = BatchDevice()
+    connector = batch_connector(device)
+    client = ForegroundMotionClient(device, "b" * 32)
+    client.started = True
+    fields = (
+        {"ad_close": "关闭"}
+        if overlay == "ad"
+        else {
+            "alert_dialog_content": "本次跑步需要进行人脸验证\n验证成功后可继续跑步",
+            "dialog_confirm": "去验证",
+        }
+    )
+    connector.ui.device.dump_hierarchy = lambda: hierarchy(tv_gps_strength="GPS信号优", **fields)
+    result = connector.capture(
+        motion_request=client.request,
+        renew_motion=client,
+        authorize_motion=lambda _: pytest.fail("Unknown UI must not authorize motion"),
+    )
+    assert device.calls[-1] == ("shell", CAPTURE_MOTION_TAIL)
+    assert result.frame.inspection.run_control_state == "unknown"

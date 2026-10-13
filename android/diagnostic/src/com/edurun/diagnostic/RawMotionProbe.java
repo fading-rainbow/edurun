@@ -16,7 +16,7 @@ import java.util.ArrayList;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-/** 独立诊断：只读自有CSV、最多10秒，不循环、不补帧、不生成步数或目标App结果。 */
+/** 独立诊断：有界原始片段回放，不补帧、不生成步数或目标App结果。 */
 final class RawMotionProbe implements SensorEventListener {
     private final SensorManager sensors;
     private final File input;
@@ -38,6 +38,8 @@ final class RawMotionProbe implements SensorEventListener {
     private boolean leaseRequired;
     private long leaseDeadlineNs, lastObservationNs;
     private long receivedCount;
+    private long renewAttempts;
+    private boolean loaded, started;
 
     RawMotionProbe(SensorManager manager, File file, boolean stall, String request) {
         this(manager, file, stall, request, false, 1);
@@ -53,6 +55,8 @@ final class RawMotionProbe implements SensorEventListener {
         synchronized (lock) {
             leaseRequired = true;
             long now = SystemClock.elapsedRealtimeNanos();
+            try { report.put("initial_observation_ns", observedNs); report.put("initial_lease_check_ns", now); }
+            catch (Exception ignored) {}
             if (ttlMs < 100 || ttlMs > 2000 || observedNs <= 0 || observedNs > now
                 || now-observedNs > 1_000_000_000L) return;
             lastObservationNs = observedNs; leaseDeadlineNs = observedNs + ttlMs*1_000_000L;
@@ -61,6 +65,10 @@ final class RawMotionProbe implements SensorEventListener {
 
     boolean renewLease(String request, long observedNs, int ttlMs) {
         synchronized (lock) {
+            renewAttempts++;
+            try { report.put("renew_attempts", renewAttempts); report.put("renew_observation_ns", observedNs);
+                report.put("renew_check_ns", SystemClock.elapsedRealtimeNanos()); }
+            catch (Exception ignored) {}
             if (!active || !leaseRequired || !requestId.equals(request)) return false;
             long now = SystemClock.elapsedRealtimeNanos();
             if (now >= leaseDeadlineNs) { finish("lease_expired"); return false; }
@@ -118,17 +126,37 @@ final class RawMotionProbe implements SensorEventListener {
         report.put("bounded_stream", boundedStream);
         report.put("replay_passes", replayPasses);
         report.put("original_continuous_trace", !boundedStream && replayPasses == 1);
+        loaded = true;
+    }
+
+    // 冷启动和CSV解析不占用运动许可；准备阶段不注册消费者、不打开注入通道。
+    void prepare() {
+        synchronized (lock) {
+            try {
+                report.put("diagnostic_only", true); report.put("request_id", requestId);
+                if (requestId == null || !requestId.matches("[a-f0-9]{32}") || started) {
+                    throw new IllegalArgumentException();
+                }
+                load(); report.put("state", "prepared");
+            } catch (Exception failure) { finish("probe_rejected"); }
+        }
+    }
+
+    boolean isPrepared() {
+        synchronized (lock) { return loaded && !started && report.optString("state").equals("prepared"); }
     }
 
     void start() {
         synchronized (lock) {
+            if (started) return;
+            started = true;
             try {
                 report.put("diagnostic_only", true); report.put("state", "initializing");
                 if (requestId == null || !requestId.matches("[a-f0-9]{32}")) {
                     throw new IllegalArgumentException();
                 }
                 report.put("request_id", requestId);
-                load();
+                if (!loaded) load();
                 acceleration = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
                 gyroscope = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
                 if (acceleration == null || gyroscope == null) throw new IllegalArgumentException();
@@ -186,7 +214,7 @@ final class RawMotionProbe implements SensorEventListener {
                     if (index == rows.size() * replayPasses) {
                         worker.postDelayed(() -> finish("completed"), 200);
                     } else {
-                        // 以本次实际发送时间为基准，不追赶积压，不循环片段。
+                        // 以本次实际发送时间为基准，不追赶积压；仅明确有界的遍数可回放。
                         long due = now + 20_000_000L;
                         long delay = Math.max(1, (due-SystemClock.elapsedRealtimeNanos()+999_999L)/1_000_000L);
                         if (stallTest && index == 25) delay = 250;
@@ -244,7 +272,7 @@ final class RawMotionProbe implements SensorEventListener {
                 report.put("sent_sample_count", index * 2);
                 report.put("received_sample_count", boundedStream ? receivedCount : received.length());
                 report.put("expected_rows", rows.size() * replayPasses);
-                report.put("current_replay_pass", index / rows.size());
+                report.put("current_replay_pass", rows.isEmpty() ? 0 : index / rows.size());
                 // 回放中不序列化全量原始事件，避免主线程快照/大文本布局阻塞接收队列。
                 // 完成或失败后再输出完整证据；运行中的计数不作为接收验收证明。
                 if (!active && !boundedStream) { report.put("sent_samples", sent); report.put("received_samples", received); }
@@ -256,10 +284,10 @@ final class RawMotionProbe implements SensorEventListener {
     }
 
     void close() {
-        synchronized (lock) { if (active) finish("activity_destroyed"); }
+        synchronized (lock) { if (active || isPrepared()) finish("activity_destroyed"); }
     }
 
     void cancel() {
-        synchronized (lock) { if (active) finish("operator_paused"); }
+        synchronized (lock) { if (active || isPrepared()) finish("operator_paused"); }
     }
 }

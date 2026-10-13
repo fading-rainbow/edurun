@@ -22,7 +22,7 @@ MANAGER_SHA256 = "2eff3e9f096b2cddfc4a86955555e636c6e853eba5f54b0bf8b9f2441a1d9d
 
 
 class LocationAuthorizationExpired(RuntimeError):
-    """设备查询完成后移动许可已过期；尚未发送位置命令。"""
+    """设备查询完成后动作许可已过期；尚未发送对应的写命令。"""
 
 
 class MuMuBridge(AndroidBridge):
@@ -229,10 +229,19 @@ class MuMuBridge(AndroidBridge):
                 raise RuntimeError("已请求本项目实例退出，但尚未确认停止；未强杀其他程序")
             time.sleep(1)
 
-    def run(self, *arguments: str, timeout: float = 15) -> str:
+    def run(
+        self,
+        *arguments: str,
+        timeout: float = 15,
+        authorize: Callable[[], bool] | None = None,
+    ) -> str:
         if not arguments or arguments[0] in {"emu", "connect", "disconnect", "kill-server"}:
             raise ValueError("不能把MuMu适配器用于QEMU控制台或全局ADB控制")
+        if authorize is not None and not callable(authorize):
+            raise ValueError("设备守卫后的动作许可必须是回调")
         self.check_device()
+        if authorize is not None and authorize() is not True:
+            raise LocationAuthorizationExpired("设备检查后动作许可过期；未发出ADB命令")
         return AndroidBridge.run(self, *arguments, timeout=timeout)
 
     def location_wgs84(

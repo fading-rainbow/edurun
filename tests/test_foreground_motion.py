@@ -183,3 +183,14 @@ def test_receiver_has_no_network_location_injection_or_user_auth_access():
     assert "captureDone" in source and "events.length() >= 8192" in source
     assert "INTERNET" not in manifest and "LOCATION" not in manifest
     assert "injectSensorData" not in source and "TYPE_STEP_COUNTER" not in source
+
+
+def test_merged_renewal_preserves_nanoseconds_as_decimal_not_32bit_shell_arithmetic(tmp_path):
+    d = Device(clip(tmp_path))
+    c = ForegroundMotionClient(d)
+    with pytest.raises(ValueError, match="未开始"):
+        c.renewal_observation_command()
+    c.started = True
+    command = c.renewal_observation_command()
+    assert "${seconds}${fraction}0000000" in command and "$(( " not in command
+    assert "grep -c" in command and "motion_lease_ms 2000" in command

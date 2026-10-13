@@ -39,6 +39,10 @@ class MuMuPositionWorker:
         self.commands_acknowledged = 0
         self.last_acknowledged: GeoPoint | None = None
         self.output_state_unknown = False
+        self.pending_lock = threading.Lock()
+        self.pending_renewal: float | None = None
+        self.last_async_observed_at = -math.inf
+        self.async_allowed = False
 
     def _snapshot(self) -> DriveState:
         # 更新许可不推进位置；只有输出线程的时钟步可以改变轨迹。
@@ -57,7 +61,7 @@ class MuMuPositionWorker:
             or not math.isfinite(observed_at)
             or observed_at < 0
             or not 0 <= now - observed_at <= 2
-            or observed_at <= self.last_observed_at
+            or observed_at <= max(self.last_observed_at, self.last_async_observed_at)
             or self.stop_event.is_set()
             or self.error is not None
         ):
@@ -69,13 +73,16 @@ class MuMuPositionWorker:
     def set_path(self, points: tuple[GeoPoint, ...], observed_at: float, *, repeat=False) -> None:
         # 在等待IO锁之前撤销旧输出，慢速设备查询不能阻止暂停/切换请求撤销许可。
         self.revoked.set()
+        self._clear_pending(disallow=True)
         with self.lock:
             self.engine.pause("新路径检查中")
             try:
                 now = self._fresh(observed_at)
                 self.engine.set_path(points, now, repeat=repeat)
                 self.last_observed_at = observed_at
-                self.revoked.clear()
+                with self.pending_lock:
+                    self.async_allowed = True
+                    self.revoked.clear()
             finally:
                 self.state = self._snapshot()
 
@@ -85,12 +92,66 @@ class MuMuPositionWorker:
                 now = self._fresh(observed_at)
                 self.engine.renew(now)
                 self.last_observed_at = observed_at
-                self.revoked.clear()
+                with self.pending_lock:
+                    self.async_allowed = True
+                    self.revoked.clear()
             finally:
                 self.state = self._snapshot()
 
+    def renew_async(self, observed_at: float) -> None:
+        """只交付最新观察，不等待厂商IO；在线程中按观察时间原期限应用，不补发。"""
+        now = self.clock()
+        with self.pending_lock:
+            if (
+                not math.isfinite(now)
+                or not math.isfinite(observed_at)
+                or observed_at < 0
+                or not 0 <= now - observed_at < 2
+                or observed_at <= max(self.last_observed_at, self.last_async_observed_at)
+                or self.stop_event.is_set()
+                or self.error is not None
+                or self.engine.player is None
+                or not self.async_allowed
+            ):
+                self.pending_renewal = None
+                self.revoked.set()
+                self.async_allowed = False
+                raise ValueError("需要新鲜、递增且已有路径的观察，拒绝异步续约")
+            self.pending_renewal = observed_at
+            self.last_async_observed_at = observed_at
+            self.revoked.clear()
+
+    def _clear_pending(self, *, disallow=False):
+        with self.pending_lock:
+            self.pending_renewal = None
+            if disallow:
+                self.async_allowed = False
+                self.revoked.set()
+
+    def _apply_pending(self, now: float):
+        with self.pending_lock:
+            observed = self.pending_renewal
+            self.pending_renewal = None
+            if (
+                observed is None
+                or observed <= self.last_observed_at
+                or not self.async_allowed
+                or self.revoked.is_set()
+            ):
+                return
+            age = now - observed
+            if not 0 <= age < 2 or self.stop_event.is_set() or self.error is not None:
+                self.engine.pause("异步观察已过期，不延长旧许可")
+                self.revoked.set()
+                self.async_allowed = False
+                return
+            # 与撤销使用同一小锁；暂停不能被已经取出的旧邮箱观察重新解除。
+            self.engine.renew(now, lease_s=2 - age)
+            self.last_observed_at = observed
+
     def pause(self, reason: str = "观察不明/广告/验证/用户暂停") -> None:
         self.revoked.set()
+        self._clear_pending(disallow=True)
         with self.lock:
             self.engine.pause(reason)
             self.state = self._snapshot()
@@ -111,6 +172,7 @@ class MuMuPositionWorker:
     def _tick(self) -> None:
         with self.lock:
             now = self.clock()
+            self._apply_pending(now)
             if self.revoked.is_set() or self.stop_event.is_set():
                 self.engine.pause("移动许可撤销")
                 self.state = self.engine.step(now)
@@ -177,6 +239,7 @@ class MuMuPositionWorker:
             raise ValueError("线程退出等待必须在0–30秒内")
         self.stop_event.set()
         self.revoked.set()
+        self._clear_pending(disallow=True)
         if self.thread:
             self.thread.join(timeout_s)
             if self.thread.is_alive():

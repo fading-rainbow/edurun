@@ -11,7 +11,7 @@ from .android import DIAGNOSTIC_PACKAGE
 from .mumu import MuMuBridge
 from .raw_motion import RecordedProbeClip, match_recorded_snapshot, write_motion_probe
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
-from .target import TARGET
+from .target import RUN_ACTIVITY, TARGET
 from .ui import focused_component
 
 RECEIVER = "com.edurun.receiver"
@@ -50,6 +50,8 @@ class ForegroundMotionClient:
         ):
             raise ValueError("只允许明确的最多6遍有界片段回放")
         self.bounded_stream, self.replay_passes = bounded_stream, replay_passes
+        self.native_prepared = False
+        self.preload_requested = False
 
     def _command(self, action: str, observed_ns: int = 0, *, start: bool = False):
         if type(observed_ns) is not int or observed_ns < 0:
@@ -80,7 +82,7 @@ class ForegroundMotionClient:
         )
 
     def prepare(self, clip: RecordedProbeClip):
-        if self.started:
+        if self.started or self.preload_requested:
             raise ValueError("活动任务不能替换运动数据")
         if sensor_mode(self.bridge.run("shell", "dumpsys", "sensorservice")) != NORMAL:
             raise ValueError("只在正常模式提前准备，不占用运行许可窗口")
@@ -90,11 +92,49 @@ class ForegroundMotionClient:
             write_motion_probe(self.bridge, clip.payload)
         self.prepared = True
 
+    def preload(self, clip: RecordedProbeClip, *, clock=time.monotonic, sleep=time.sleep):
+        """正常模式中提前解析长片段；没有运动租约、注入或目标UI动作。"""
+        if not self.bounded_stream or not self.prepared or self.started or self.preload_requested:
+            raise ValueError("只允许已写入的新长片段任务预加载一次")
+        if sensor_mode(self.bridge.run("shell", "dumpsys", "sensorservice")) != NORMAL:
+            raise ValueError("只能在正常模式提前解析运动数据")
+        self.preload_requested = True  # 不明结果也不能重复PREPARE；STOP仍能取消该nonce。
+        self._command("PREPARE", start=True)
+        deadline = clock() + 10
+        while clock() < deadline:
+            value = self.bridge.run(
+                "shell", "run-as", DIAGNOSTIC_PACKAGE, "cat", "files/motion-service.json"
+            )
+            try:
+                state = json.loads(value)
+                probe = state["raw_motion_probe"]
+                if state["package"] == DIAGNOSTIC_PACKAGE and state["request_id"] == self.request:
+                    if probe["state"] != "prepared":
+                        raise ValueError("原生任务未就绪，不开始运动")
+                    if (
+                        probe["request_id"] != self.request
+                        or probe["clip_sha256"] != clip.sha256
+                        or probe["source_rows"] != len(clip.rows)
+                        or probe["bounded_stream"] is not True
+                        or probe["replay_passes"] != self.replay_passes
+                        or probe["sent_rows"] != 0
+                        or probe["lease_required"] is not False
+                    ):
+                        raise ValueError("原生预加载身份、数据或零输出状态不匹配")
+                    self.native_prepared = True
+                    return
+            except (KeyError, TypeError, json.JSONDecodeError):
+                pass  # 未出现本次状态，不能把旧nonce或命令ACK当作准备完成。
+            sleep(0.1)
+        raise ValueError("未获取本次原生预加载证据，不开始运动")
+
     def start(self, observed_ns: int):
         if self.started:
             raise ValueError("同一任务不能重复开始；过期后也不能自动重启")
         if not self.prepared:
             raise ValueError("必须在观察前完成有界载荷准备")
+        if self.bounded_stream and not self.native_prepared:
+            raise ValueError("长片段必须在正常模式预加载，冷启动不能消耗运动许可")
         # HAL模式由编排入口核对；native init仍会核对模式/白名单。
         # 不在最新观察与START之间重写文件，或插入多次设备查询消耗两秒许可。
         # ACK只表示命令被接受；真正运行仍需独立nonce/状态/回调证明。
@@ -106,8 +146,39 @@ class ForegroundMotionClient:
             raise ValueError("未开始的任务不能续期")
         self._command("RENEW", observed_ns)
 
+    def renewal_observation_command(self) -> str:
+        """用于已解析的允许帧的尾查询。shell再次核对唯一焦点后才续期。"""
+        if not self.started:
+            raise ValueError("未开始的运动任务不能生成续期观察")
+        # 只插入构造时验证过的hex32和有界整数；没有调用方shell、路径或认证内容。
+        pattern = (
+            r"^[[:space:]]*mCurrentFocus=Window\{[^{}]*[[:space:]]"
+            + TARGET.replace(".", r"\.")
+            + "/"
+            + RUN_ACTIVITY.replace(".", r"\.")
+            + r"\}$"
+        )
+        return (
+            'window=$(dumpsys window displays); printf "%s\\n" "$window"; '
+            'if [ "$(printf "%s\\n" "$window" | grep -c "^[[:space:]]*mCurrentFocus=")" = 1 ] '
+            f'&& printf "%s\\n" "$window" | grep -Eq \'{pattern}\'; then '
+            "read -r up idle < /proc/uptime; echo __EDURUN_CLOCK__; "
+            'printf "%s %s\\n" "$up" "$idle"; '
+            'if printf "%s\\n" "$up" | grep -Eq "^[0-9]+[.][0-9]{2}$"; then '
+            "seconds=${up%.*}; fraction=${up#*.}; "
+            # Android mksh may use signed 32-bit arithmetic. Concatenation preserves
+            # the actual two-decimal uptime exactly, without overflow or a guessed clock.
+            'observed="${seconds}${fraction}0000000"; '
+            f"am startservice -n {SERVICE} -a {DIAGNOSTIC_PACKAGE}.MOTION_RENEW "
+            f"--es motion_probe_request {self.request} --el motion_observed_ns $observed "
+            f"--ei motion_replay_passes {self.replay_passes} --ez motion_bounded_stream "
+            f"{'true' if self.bounded_stream else 'false'} --ei motion_lease_ms 2000 >/dev/null; "
+            "fi; echo __EDURUN_MOTION__; "
+            "run-as com.edurun.diagnostic cat files/motion-service.json; fi"
+        )
+
     def stop(self):
-        if self.started:
+        if self.started or self.preload_requested:
             self._command("STOP")
 
 

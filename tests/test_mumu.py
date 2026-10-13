@@ -395,3 +395,20 @@ def test_location_propagates_bounded_command_timeout_to_verified_vendor(fixture)
     b.runner = timed
     b.location_wgs84(GeoPoint(lon=116.4, lat=39.9), authorize=lambda: True, command_timeout_s=1)
     assert calls[-1][1] == 1 and "location" in calls[-1][0]
+
+
+def test_batched_action_authorization_is_rechecked_after_full_owned_device_guard(fixture):
+    b = make(fixture)
+    before = len(fixture["commands"])
+    with pytest.raises(mumu.LocationAuthorizationExpired):
+        b.run("shell", "am", "startservice", authorize=lambda: False)
+    issued = fixture["commands"][before:]
+    assert issued and not any("startservice" in command for command in issued)
+
+
+def test_noncallable_batch_authorization_is_rejected_before_any_queries(fixture):
+    b = make(fixture)
+    before = len(fixture["commands"])
+    with pytest.raises(ValueError, match="回调"):
+        b.run("shell", "am", "startservice", authorize=True)
+    assert len(fixture["commands"]) == before

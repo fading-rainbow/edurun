@@ -234,3 +234,100 @@ def test_real_thread_pause_can_revoke_while_guard_holds_io_lock(setup):
         if pauser.ident is not None:
             pauser.join(2)
     assert not bridge.locations and not worker.engine.enabled
+
+
+def test_async_renewal_is_latest_only_and_keeps_original_expiry(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker.renew_async(1)
+    clock[0] = 1.25
+    worker.renew_async(1.25)
+    clock[0] = 2
+    worker._tick()
+    assert worker.last_observed_at == 1.25 and worker.engine.lease_until == 3.25
+    clock[0] = 3.25
+    worker._tick()
+    assert len(bridge.locations) == 1 and not worker.engine.enabled
+
+
+def test_async_renewal_does_not_wait_for_vendor_io_lock(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    entered, release, delivered = threading.Event(), threading.Event(), threading.Event()
+
+    def slow_guard():
+        entered.set()
+        assert release.wait(2)
+
+    bridge.before_authorize = slow_guard
+    tick = threading.Thread(target=worker._tick)
+
+    def renew():
+        worker.renew_async(1)
+        delivered.set()
+
+    try:
+        tick.start()
+        assert entered.wait(2)
+        clock[0] = 1
+        sender = threading.Thread(target=renew)
+        sender.start()
+        assert delivered.wait(0.5), "Mailbox must not wait for the IO lock"
+        sender.join(1)
+    finally:
+        release.set()
+        tick.join(2)
+        worker.stop()
+
+
+def test_pause_discards_pending_observation_and_disallows_rearming(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker.renew_async(1)
+    worker.pause()
+    worker._tick()
+    with pytest.raises(ValueError):
+        worker.renew_async(1.5)
+    assert not bridge.locations and worker.revoked.is_set()
+
+
+def test_pending_observation_cannot_extend_expired_window(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker.renew_async(1)
+    clock[0] = 3
+    worker._tick()
+    assert not bridge.locations and worker.revoked.is_set()
+    assert not worker.engine.enabled
+
+
+def test_path_switch_clears_mailbox_from_previous_path(setup):
+    worker, _, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker.renew_async(1)
+    clock[0] = 1.5
+    worker.set_path(config.baseline, 1.5, repeat=True)
+    assert worker.pending_renewal is None and worker.last_observed_at == 1.5
+
+
+def test_external_revocation_after_delivery_is_not_cleared_by_old_pending_frame(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker.renew_async(1)
+    worker.revoked.set()
+    worker._tick()
+    assert worker.revoked.is_set() and not bridge.locations
+
+
+def test_sync_cannot_replay_observation_already_delivered_async(setup):
+    worker, _, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    clock[0] = 1
+    worker.renew_async(1)
+    with pytest.raises(ValueError):
+        worker.renew(1)

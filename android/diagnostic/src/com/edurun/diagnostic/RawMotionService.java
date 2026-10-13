@@ -21,6 +21,7 @@ public final class RawMotionService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private RawMotionProbe probe;
     private String requestId;
+    private long preparedUntilNs;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -29,7 +30,7 @@ public final class RawMotionService extends Service {
             "本机运动输入诊断", NotificationManager.IMPORTANCE_LOW));
         startForeground(51, new Notification.Builder(this, "imu-diagnostic")
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
-            .setContentTitle("有界IMU诊断正在运行")
+            .setContentTitle("本机有界IMU诊断")
             .setContentText("两秒授权超时停止；不生成步数或跑步记录").build());
     }
 
@@ -48,7 +49,14 @@ public final class RawMotionService extends Service {
             if (probe == null) stopSelf();
             return START_NOT_STICKY;
         }
-        if (!"com.edurun.diagnostic.MOTION_START".equals(intent.getAction())
+        boolean prepare = "com.edurun.diagnostic.MOTION_PREPARE".equals(intent.getAction());
+        boolean start = "com.edurun.diagnostic.MOTION_START".equals(intent.getAction());
+        if (start && probe != null && requestId.equals(request) && probe.isPrepared()) {
+            if (SystemClock.elapsedRealtimeNanos() >= preparedUntilNs) probe.cancel();
+            else { probe.requireLease(observed, ttl); probe.start(); }
+            return START_NOT_STICKY;
+        }
+        if ((!start && !prepare)
             || probe != null || request == null || !request.matches("[a-f0-9]{32}")) {
             if (probe == null) stopSelf();
             return START_NOT_STICKY;
@@ -72,13 +80,17 @@ public final class RawMotionService extends Service {
             new File(getFilesDir(), "motion-probe.csv"), false, request,
             intent.getBooleanExtra("motion_bounded_stream", false),
             intent.getIntExtra("motion_replay_passes", 1));
-        probe.requireLease(observed, ttl); probe.start(); handler.post(snapshot);
+        if (prepare) {
+            probe.prepare(); preparedUntilNs = SystemClock.elapsedRealtimeNanos() + 30_000_000_000L;
+        } else { probe.requireLease(observed, ttl); probe.start(); }
+        handler.post(snapshot);
         return START_NOT_STICKY;
     }
 
     private final Runnable snapshot = new Runnable() {
         @Override public void run() {
             if (probe == null) return;
+            if (probe.isPrepared() && SystemClock.elapsedRealtimeNanos() >= preparedUntilNs) probe.cancel();
             JSONObject result = probe.snapshot();
             try {
                 JSONObject output = new JSONObject(); output.put("package", getPackageName());
@@ -95,7 +107,7 @@ public final class RawMotionService extends Service {
                 }
             } catch (Exception failure) { probe.close(); stopSelf(); return; }
             String state = result.optString("state");
-            if (!state.equals("running") && !state.equals("initializing")) stopSelf();
+            if (!state.equals("running") && !state.equals("initializing") && !state.equals("prepared")) stopSelf();
             else handler.postDelayed(this, 250);
         }
     };
