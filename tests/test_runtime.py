@@ -284,3 +284,58 @@ def test_unknown_or_paused_page_never_renews_motion(setup):
         ).action
         == "pause"
     )
+
+
+def paced_dispatcher(setup):
+    original, worker, _bridge, clock, _config = setup
+    dispatcher = RuntimeDispatcher(
+        original.planner,
+        original.observer,
+        worker,
+        clock=lambda: clock[0],
+        pace_range_s_per_km=(180, 600),
+    )
+    dispatcher.start(witness())
+    # Synthetic state-machine setup only, not actual device/checkpoint proof.
+    dispatcher.controller.completed = 3
+    dispatcher.controller.completed_names = ("点0", "点1", "点2")
+    return dispatcher, worker, clock
+
+
+def test_slow_formal_pace_continues_roads_and_requires_two_new_eligible_finish_frames(setup):
+    dispatcher, worker, clock = paced_dispatcher(setup)
+    names = dispatcher.controller.completed_names
+    clock[0] = 3
+    result = dispatcher.update(frame(3, names, distance_m=1550, elapsed=1000))
+    assert result.action == "base_route" and worker.engine.enabled
+    assert not dispatcher.finish_ready and not dispatcher.controller.finish_confirmed
+    for t, expected in ((4, "wait"), (5, "finish_ready")):
+        clock[0] = t
+        assert (
+            dispatcher.update(frame(t, names, distance_m=2000, elapsed=1100 + t)).action == expected
+        )
+    assert dispatcher.finish_ready and not worker.engine.enabled
+    assert dispatcher.controller.submitted_record_id is None
+
+
+def test_too_fast_pace_holds_without_moving_or_accepting_ineligible_finish_frame(setup):
+    dispatcher, worker, clock = paced_dispatcher(setup)
+    names = dispatcher.controller.completed_names
+    clock[0] = 3
+    assert dispatcher.update(frame(3, names, distance_m=1550, elapsed=200)).action == "wait"
+    assert not worker.engine.enabled and dispatcher.controller.finish_candidate is None
+    clock[0] = 4
+    assert dispatcher.update(frame(4, names, distance_m=1550, elapsed=300)).action == "wait"
+    clock[0] = 5
+    assert dispatcher.update(frame(5, names, distance_m=1550, elapsed=301)).action == "finish_ready"
+
+
+@pytest.mark.parametrize(
+    "value", [(0, 600), (600, 180), (True, 600), (180, float("nan")), [180, 600]]
+)
+def test_pace_range_must_be_explicit_well_formed_rule_values(setup, value):
+    dispatcher, worker, *_ = setup
+    with pytest.raises(ValueError, match="配速"):
+        RuntimeDispatcher(
+            dispatcher.planner, dispatcher.observer, worker, pace_range_s_per_km=value
+        )

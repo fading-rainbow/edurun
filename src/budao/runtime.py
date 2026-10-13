@@ -90,10 +90,23 @@ class RuntimeDispatcher:
         worker: MuMuPositionWorker,
         *,
         clock: Callable[[], float] = time.monotonic,
+        pace_range_s_per_km: tuple[float, float] | None = None,
     ):
         if not isinstance(worker, MuMuPositionWorker) or worker.engine.planner is not planner:
             raise ValueError("调度器须与同一个受守卫的MuMu路网/位置核心配对")
+        if pace_range_s_per_km is not None and (
+            not isinstance(pace_range_s_per_km, tuple)
+            or len(pace_range_s_per_km) != 2
+            or any(
+                type(v) not in (int, float) or not math.isfinite(v) or v <= 0
+                for v in pace_range_s_per_km
+            )
+            or pace_range_s_per_km[0] >= pace_range_s_per_km[1]
+            or planner.config.minimum_distance_m + planner.config.margin_m <= 10
+        ):
+            raise ValueError("配速范围须为现场规则确认的两个有限正数，单位秒/km")
         self.planner, self.observer, self.worker, self.clock = planner, observer, worker, clock
+        self.pace_range_s_per_km = pace_range_s_per_km
         self.controller = RunController(
             minimum_distance_m=planner.config.minimum_distance_m + planner.config.margin_m,
             maximum_frame_age_s=2,
@@ -142,6 +155,24 @@ class RuntimeDispatcher:
             return Decision(action="finish_ready", reason="等待正常结束/提交确认，不继续移动")
         observation = self.observer.observe(frame.inspection, frame.sampled_at, frame.frame_id)
         decision = self.controller.step(observation, self.clock())
+        if (
+            self.pace_range_s_per_km is not None
+            and observation.screen == "running"
+            and self.controller.completed == 3
+            and observation.distance_m >= self.controller.minimum_distance_m
+            and decision.action in {"wait", "finish_ready"}
+        ):
+            minimum, maximum = self.pace_range_s_per_km
+            # App公里值只显示两位小数，以±10m保守计界，不制造更精确的里程。
+            fast_bound = observation.elapsed_s * 1000 / (observation.distance_m + 10)
+            slow_bound = observation.elapsed_s * 1000 / (observation.distance_m - 10)
+            if fast_bound < minimum or slow_bound > maximum:
+                self.controller.finish_candidate = None
+                self.controller.finish_confirmed = False
+                decision = Decision(
+                    action="wait" if fast_bound < minimum else "base_route",
+                    reason="三点与里程达标，但配速尚未在已核对范围；不结束或提交",
+                )
         if decision.action not in {"navigate", "base_route"}:
             self.worker.pause(decision.reason)
             self.finish_ready = decision.action == "finish_ready"
