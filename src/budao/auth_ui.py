@@ -69,6 +69,11 @@ def login_ui(hierarchy: str) -> dict:
         if nickname is None:
             # 4.3.0/code230实际冷启动的学生资料页不暴露昵称资源ID。
             # 只接收已认证、正数ID与唯一头像布局的完整组合；缺项不能当登录成功。
+            if any(
+                n.get("package") == TARGET and n.get("resource-id") == TARGET + ":id/user_nickname"
+                for n in root.iter("node")
+            ):
+                return result  # 隐藏或重复昵称不是该已采集的缺字段布局。
             avatars = [
                 n
                 for n in nodes

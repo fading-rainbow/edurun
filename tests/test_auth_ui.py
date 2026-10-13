@@ -101,6 +101,23 @@ def test_actual_nickless_student_profile_requires_all_collected_identity_control
     assert login_ui(ET.tostring(root, encoding="unicode"))["state"] == "unknown"
 
 
+def test_nickless_fallback_cannot_accept_hidden_or_duplicate_nickname_fields():
+    for count, visible in ((1, "false"), (2, "true")):
+        root = ET.fromstring(nickless_profile())
+        for _ in range(count):
+            ET.SubElement(
+                root,
+                "node",
+                {
+                    "package": TARGET,
+                    "resource-id": TARGET + ":id/user_nickname",
+                    "text": "Fixture name",
+                    "visible-to-user": visible,
+                },
+            )
+        assert login_ui(ET.tostring(root, encoding="unicode"))["state"] == "unknown"
+
+
 class Device(MuMuBridge):
     def __init__(self, focus=(TARGET, MAIN), *, tasks="", version="4.3.0", changed=False):
         self.focus, self.tasks, self.version, self.changed = focus, tasks, version, changed

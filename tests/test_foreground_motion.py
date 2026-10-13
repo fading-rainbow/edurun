@@ -194,3 +194,17 @@ def test_merged_renewal_preserves_nanoseconds_as_decimal_not_32bit_shell_arithme
     command = c.renewal_observation_command()
     assert "${seconds}${fraction}0000000" in command and "$(( " not in command
     assert "grep -c" in command and "motion_lease_ms 2000" in command
+
+
+def test_gps_guard_revalidates_copied_model_before_shell_interpolation(tmp_path):
+    from budao.models import GeoPoint
+
+    c = ForegroundMotionClient(Device(clip(tmp_path)))
+    c.started = True
+    p = GeoPoint(lon=120, lat=30)
+    for value in (
+        p.model_copy(update={"lon": "120; echo UNTRUSTED"}),
+        p.model_copy(update={"lat": 90}),
+    ):
+        with pytest.raises(ValueError):
+            c.renewal_observation_command(gps_position=value)

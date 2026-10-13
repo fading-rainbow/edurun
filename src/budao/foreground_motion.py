@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 
 from .android import DIAGNOSTIC_PACKAGE
+from .models import GeoPoint
 from .mumu import MuMuBridge
 from .raw_motion import RecordedProbeClip, match_recorded_snapshot, write_motion_probe
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
@@ -146,10 +147,22 @@ class ForegroundMotionClient:
             raise ValueError("未开始的任务不能续期")
         self._command("RENEW", observed_ns)
 
-    def renewal_observation_command(self) -> str:
+    def renewal_observation_command(self, *, gps_position: GeoPoint | None = None) -> str:
         """用于已解析的允许帧的尾查询。shell再次核对唯一焦点后才续期。"""
         if not self.started:
             raise ValueError("未开始的运动任务不能生成续期观察")
+        if gps_position is not None and not isinstance(gps_position, GeoPoint):
+            raise ValueError("接收定位守卫只能使用已验证的GeoPoint")
+        if gps_position is not None:
+            # model_copy/update可跳过Pydantic校验，不能因此把任意字符串插入shell。
+            gps_position = GeoPoint.model_validate(gps_position.model_dump(warnings=False))
+        gps_guard = (
+            " --ez motion_require_received_gps true"
+            f" --ef motion_expected_lat {gps_position.lat}"
+            f" --ef motion_expected_lon {gps_position.lon}"
+            if gps_position is not None
+            else ""
+        )
         # 只插入构造时验证过的hex32和有界整数；没有调用方shell、路径或认证内容。
         pattern = (
             r"^[[:space:]]*mCurrentFocus=Window\{[^{}]*[[:space:]]"
@@ -172,9 +185,11 @@ class ForegroundMotionClient:
             f"am startservice -n {SERVICE} -a {DIAGNOSTIC_PACKAGE}.MOTION_RENEW "
             f"--es motion_probe_request {self.request} --el motion_observed_ns $observed "
             f"--ei motion_replay_passes {self.replay_passes} --ez motion_bounded_stream "
-            f"{'true' if self.bounded_stream else 'false'} --ei motion_lease_ms 2000 >/dev/null; "
+            f"{'true' if self.bounded_stream else 'false'} --ei motion_lease_ms 2000"
+            f"{gps_guard} >/dev/null; "
             "fi; echo __EDURUN_MOTION__; "
-            "run-as com.edurun.diagnostic cat files/motion-service.json; fi"
+            "run-as com.edurun.diagnostic cat files/motion-service.json; "
+            "echo __EDURUN_AFTER_CLOCK__; cat /proc/uptime; fi"
         )
 
     def stop(self):

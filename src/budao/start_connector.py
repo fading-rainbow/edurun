@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from PIL import Image
 
 from .foreground_motion import ForegroundMotionClient
+from .models import GeoPoint
 from .mumu import MuMuBridge
 from .runtime import CapturedRunFrame, StartWitness
 from .start_button import StartButtonTemplate
@@ -30,7 +31,8 @@ from .ui import AppUI, focused_component
 CAPTURE_GUARD = "dumpsys window displays; echo __EDURUN_PACKAGE__; dumpsys package com.lptiyu.tanke"
 CAPTURE_MOTION_TAIL = (
     "dumpsys window displays; echo __EDURUN_CLOCK__; cat /proc/uptime; "
-    "echo __EDURUN_MOTION__; run-as com.edurun.diagnostic cat files/motion-service.json"
+    "echo __EDURUN_MOTION__; run-as com.edurun.diagnostic cat files/motion-service.json; "
+    "echo __EDURUN_AFTER_CLOCK__; cat /proc/uptime"
 )
 
 
@@ -66,6 +68,7 @@ class StartConnector:
         motion_request: str | None = None,
         renew_motion: ForegroundMotionClient | None = None,
         authorize_motion: Callable[[TargetInspection], bool] | None = None,
+        gps_position: GeoPoint | None = None,
     ) -> RunCapture:
         if motion_request is not None and (
             not isinstance(motion_request, str) or not re.fullmatch(r"[a-f0-9]{32}", motion_request)
@@ -79,6 +82,10 @@ class StartConnector:
             or pixels
         ):
             raise ValueError("合并续期需要同一设备任务、明确帧判断，不能与慢速像素读取混用")
+        if gps_position is not None and (
+            not isinstance(gps_position, GeoPoint) or renew_motion is None
+        ):
+            raise ValueError("接收定位守卫须绑定同一运动任务和实际已确认位置")
         expected = (TARGET, RUN_ACTIVITY)
         # 同一守卫内批量只读，减少每帧重复管理器查询；没有省略设备、版本或焦点检查。
         guard = self.bridge.run("shell", CAPTURE_GUARD)
@@ -135,12 +142,17 @@ class StartConnector:
                 if (
                     view.state == "metrics"
                     and view.run_control_state in {"running", "paused"}
-                    and view.gps_label == GPS_READY_LABEL
+                    and (
+                        view.gps_label == GPS_READY_LABEL
+                        or (gps_position is not None and view.gps_label == "GPS信号弱")
+                    )
                     and bool(view.checkpoint_cards)
                     and 0 <= self.clock() - sampled < 2
                     and authorize_motion(view) is True
                 ):
-                    tail_command = renew_motion.renewal_observation_command()
+                    tail_command = renew_motion.renewal_observation_command(
+                        gps_position=gps_position
+                    )
             if tail_command == CAPTURE_MOTION_TAIL:
                 value = self.bridge.run("shell", tail_command)
             else:
@@ -157,6 +169,17 @@ class StartConnector:
                 raise ValueError("共享观察缺少实际Android单调时钟；不续期")
             seconds, decimals = uptime.split()[0].split(".")
             android_ns = int(seconds) * 1_000_000_000 + int(decimals) * 10_000_000
+            state, after_marker, after_clock = state.partition("__EDURUN_AFTER_CLOCK__")
+            if after_marker:
+                if not re.fullmatch(r"\s*\d+\.\d{2}\s+\d+\.\d{2}\s*", after_clock):
+                    raise ValueError("接收定位结束时钟格式未知")
+                seconds, decimals = after_clock.split()[0].split(".")
+                after_ns = int(seconds) * 1_000_000_000 + int(decimals) * 10_000_000
+                if not 0 <= after_ns - android_ns <= 2_000_000_000:
+                    raise ValueError("接收定位结束时钟倒退或读取过慢")
+                android_ns = after_ns
+            elif gps_position is not None:
+                raise ValueError("接收定位缺少实际结束时钟；不授权位置输出")
             try:
                 candidate = json.loads(state) if len(state) <= 2 * 1024 * 1024 else None
                 if (

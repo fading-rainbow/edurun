@@ -5,6 +5,7 @@ import pytest
 from test_runtime import frame
 
 from budao.foreground_motion import ForegroundMotionClient
+from budao.models import GeoPoint
 from budao.mumu import MuMuBridge
 from budao.start_connector import CAPTURE_GUARD, CAPTURE_MOTION_TAIL, RunCapture, StartConnector
 from budao.target import RUN_ACTIVITY, TARGET
@@ -121,6 +122,8 @@ class BatchDevice(Device):
                 + self.uptime
                 + "\n__EDURUN_MOTION__\n"
                 + json.dumps({"package": "com.edurun.diagnostic", "request_id": self.nonce})
+                + "\n__EDURUN_AFTER_CLOCK__\n"
+                + self.uptime
             )
         return f
 
@@ -238,3 +241,49 @@ def test_merged_capture_never_renews_through_ad_or_human_verification(overlay):
     )
     assert device.calls[-1] == ("shell", CAPTURE_MOTION_TAIL)
     assert result.frame.inspection.run_control_state == "unknown"
+
+
+def test_weak_ui_gps_requires_explicit_native_reception_guard_not_fake_strong_label():
+    from test_checkpoint_cards import row
+    from test_target import hierarchy
+
+    device = BatchDevice()
+    connector = batch_connector(device)
+    client = ForegroundMotionClient(device, "b" * 32)
+    client.started = True
+    button = (
+        f'<node package="{TARGET}" resource-id="{TARGET}:id/tv_start_pause_continue_run" '
+        'class="android.widget.ProgressBar" enabled="true" visible-to-user="true"/>'
+    )
+    connector.ui.device.dump_hierarchy = lambda: hierarchy(
+        tv_gps_strength="GPS信号弱", chronometer="00:01:00"
+    ).replace("</hierarchy>", row("待分配(再跑123米后分配打卡点)") + button + "</hierarchy>")
+    arguments = dict(
+        motion_request=client.request, renew_motion=client, authorize_motion=lambda _: True
+    )
+    connector.capture(**arguments)
+    assert device.calls[-1] == ("shell", CAPTURE_MOTION_TAIL)
+    result = connector.capture(**arguments, gps_position=GeoPoint(lon=120, lat=30))
+    assert result.frame.inspection.gps_label == "GPS信号弱"
+    command = device.calls[-1][-1]
+    assert "motion_require_received_gps true" in command and "motion_expected_lat 30.0" in command
+    assert "motion_lease_ms 2000" in command
+    # The command requires native proof; its ACK is not that proof or a movement permission.
+    assert "gps_reception" not in result.motion_snapshot
+    with pytest.raises(ValueError, match="接收定位"):
+        connector.capture(gps_position=GeoPoint(lon=120, lat=30))
+
+
+@pytest.mark.parametrize("after", ["12.33 8.00", "14.35 8.00", "unknown"])
+def test_observation_end_clock_rejects_backward_slow_or_unknown_read(after):
+    class EndClockDevice(BatchDevice):
+        def run(self, *args, **kwargs):
+            result = super().run(*args, **kwargs)
+            if "__EDURUN_AFTER_CLOCK__" in result:
+                return (
+                    result.split("__EDURUN_AFTER_CLOCK__")[0] + "__EDURUN_AFTER_CLOCK__\n" + after
+                )
+            return result
+
+    with pytest.raises(ValueError, match="结束时钟"):
+        batch_connector(EndClockDevice()).capture(motion_request="b" * 32)
