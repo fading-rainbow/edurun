@@ -26,7 +26,14 @@ OBSERVATION_COMMAND = (
 
 
 class ForegroundMotionClient:
-    def __init__(self, bridge: MuMuBridge, request_id: str | None = None):
+    def __init__(
+        self,
+        bridge: MuMuBridge,
+        request_id: str | None = None,
+        *,
+        bounded_stream=False,
+        replay_passes=1,
+    ):
         if not isinstance(bridge, MuMuBridge):
             raise ValueError("前台运动服务只能使用本项目MuMu")
         import re
@@ -35,6 +42,14 @@ class ForegroundMotionClient:
         if not re.fullmatch(r"[a-f0-9]{32}", self.request):
             raise ValueError("需要新的独立任务标记，不接受认证信息")
         self.bridge, self.started, self.prepared = bridge, False, False
+        if (
+            type(bounded_stream) is not bool
+            or type(replay_passes) is not int
+            or not 1 <= replay_passes <= 6
+            or (not bounded_stream and replay_passes != 1)
+        ):
+            raise ValueError("只允许明确的最多6遍有界片段回放")
+        self.bounded_stream, self.replay_passes = bounded_stream, replay_passes
 
     def _command(self, action: str, observed_ns: int = 0, *, start: bool = False):
         if type(observed_ns) is not int or observed_ns < 0:
@@ -54,6 +69,12 @@ class ForegroundMotionClient:
             "motion_observed_ns",
             str(observed_ns),
             "--ei",
+            "motion_replay_passes",
+            str(self.replay_passes),
+            "--ez",
+            "motion_bounded_stream",
+            "true" if self.bounded_stream else "false",
+            "--ei",
             "motion_lease_ms",
             "2000",
         )
@@ -63,7 +84,10 @@ class ForegroundMotionClient:
             raise ValueError("活动任务不能替换运动数据")
         if sensor_mode(self.bridge.run("shell", "dumpsys", "sensorservice")) != NORMAL:
             raise ValueError("只在正常模式提前准备，不占用运行许可窗口")
-        write_motion_probe(self.bridge, clip.payload)
+        if self.bounded_stream:
+            write_motion_probe(self.bridge, clip.payload, bounded_stream=True)
+        else:
+            write_motion_probe(self.bridge, clip.payload)
         self.prepared = True
 
     def start(self, observed_ns: int):

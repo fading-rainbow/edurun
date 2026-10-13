@@ -47,3 +47,12 @@ uv run budao probe-mumu-target-motion --seconds 5 --output .local/runs/target-mo
 - 尚未接到原生一键完整执行入口；旧常驻检查服务与新代码部署情况分开记录。
 - 必要的本人验证须由本人通过原App正常完成，照片就绪不替代现场验证。
 - 本轮没有新成绩提交，不沿用以前某一次上传授权。
+
+## 进度交接（Claude接手，2026-10-13）
+
+- 工作区有未提交改动：有界长片段回放（ounded_stream，最多150秒/7502行/1MiB，
+eplay_passes 1–6遍），涉及
+aw_motion.py、oreground_motion.py、RawMotionProbe.java、RawMotionService.java。默认行为仍是1–10秒/502行。
+- 已修正测试 	est_native_sender_is_bounded_and_metadata_does_not_block_reception 以匹配条件限制。
+- 尚未做：针对 bounded_stream/replay_passes 的新增单元测试；重新构建并部署诊断APK；在本项目模拟器暂停页做真实长片段接收实测；之后再提交。
+- 未经设备实测，bounded_stream 不得说成已验收；不是有效跑步成绩。

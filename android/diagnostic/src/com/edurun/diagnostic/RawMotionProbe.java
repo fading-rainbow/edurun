@@ -22,6 +22,8 @@ final class RawMotionProbe implements SensorEventListener {
     private final File input;
     private final boolean stallTest;
     private final String requestId;
+    private final boolean boundedStream;
+    private final int replayPasses;
     private final Object lock = new Object();
     private final ArrayList<float[]> rows = new ArrayList<>();
     private final JSONArray sent = new JSONArray(), received = new JSONArray();
@@ -35,9 +37,16 @@ final class RawMotionProbe implements SensorEventListener {
     private long firstSendNs, lastSendNs, maximumGapNs;
     private boolean leaseRequired;
     private long leaseDeadlineNs, lastObservationNs;
+    private long receivedCount;
 
     RawMotionProbe(SensorManager manager, File file, boolean stall, String request) {
+        this(manager, file, stall, request, false, 1);
+    }
+
+    RawMotionProbe(SensorManager manager, File file, boolean stall, String request,
+            boolean stream, int passes) {
         sensors = manager; input = file; stallTest = stall; requestId = request;
+        boundedStream = stream; replayPasses = passes;
     }
 
     void requireLease(long observedNs, int ttlMs) {
@@ -63,7 +72,11 @@ final class RawMotionProbe implements SensorEventListener {
     }
 
     private void load() throws Exception {
-        if (!input.isFile() || input.length() == 0 || input.length() > 128 * 1024) {
+        if (replayPasses < 1 || replayPasses > 6 || (!boundedStream && replayPasses != 1)) {
+            throw new IllegalArgumentException();
+        }
+        if (!input.isFile() || input.length() == 0
+            || input.length() > (boundedStream ? 1024 * 1024 : 128 * 1024)) {
             throw new IllegalArgumentException();
         }
         byte[] data = new byte[(int) input.length()];
@@ -75,7 +88,8 @@ final class RawMotionProbe implements SensorEventListener {
             if (total != data.length || stream.read() != -1) throw new IllegalArgumentException();
         }
         String[] lines = new String(data, StandardCharsets.UTF_8).split("\\r?\\n");
-        if (!lines[0].equals("t_s,ax,ay,az,gx,gy,gz") || lines.length < 52 || lines.length > 502) {
+        if (!lines[0].equals("t_s,ax,ay,az,gx,gy,gz") || lines.length < 52
+            || lines.length > (boundedStream ? 7502 : 502)) {
             throw new IllegalArgumentException();
         }
         for (int i = 1; i < lines.length; i++) {
@@ -88,11 +102,11 @@ final class RawMotionProbe implements SensorEventListener {
                     throw new IllegalArgumentException();
                 }
             }
-            if (Math.abs(row[0] - (i-1) * 0.02) > 0.00001) throw new IllegalArgumentException();
+            if (Math.abs(Double.parseDouble(columns[0]) - (i-1) * 0.02) > 0.000001) throw new IllegalArgumentException();
             rows.add(row);
         }
         float duration = rows.get(rows.size()-1)[0];
-        if (duration < 1 || duration > 10) throw new IllegalArgumentException();
+        if (duration < 1 || duration > (boundedStream ? 150 : 10)) throw new IllegalArgumentException();
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(data);
         StringBuilder hash = new StringBuilder();
         for (byte value : digest) hash.append(String.format("%02x", value & 255));
@@ -101,6 +115,9 @@ final class RawMotionProbe implements SensorEventListener {
         report.put("source_rows", rows.size());
         report.put("nominal_hz", 50);
         report.put("stall_test", stallTest);
+        report.put("bounded_stream", boundedStream);
+        report.put("replay_passes", replayPasses);
+        report.put("original_continuous_trace", !boundedStream && replayPasses == 1);
     }
 
     void start() {
@@ -149,7 +166,8 @@ final class RawMotionProbe implements SensorEventListener {
                         }
                     }
                     if (firstSendNs == 0) firstSendNs = now;
-                    float[] row = rows.get(index);
+                    int sourceIndex = index % rows.size();
+                    float[] row = rows.get(sourceIndex);
                     Sensor[] channels = {acceleration, gyroscope};
                     for (int channel = 0; channel < 2; channel++) {
                         int offset = 1 + 3*channel;
@@ -160,11 +178,12 @@ final class RawMotionProbe implements SensorEventListener {
                             finish("send_rejected"); return;
                         }
                         JSONObject sample = sample(channels[channel].getType(), timestamp, values);
-                        sample.put("source_index", index); sample.put("source_t_s", row[0]);
-                        sent.put(sample);
+                        sample.put("source_index", sourceIndex); sample.put("source_t_s", sourceIndex / 50.0);
+                        if (!boundedStream || sent.length() < 128) sent.put(sample);
+                        report.put(channel == 0 ? "last_sent_acceleration" : "last_sent_gyroscope", sample);
                     }
                     lastSendNs = now; index++;
-                    if (index == rows.size()) {
+                    if (index == rows.size() * replayPasses) {
                         worker.postDelayed(() -> finish("completed"), 200);
                     } else {
                         // 以本次实际发送时间为基准，不追赶积压，不循环片段。
@@ -186,9 +205,14 @@ final class RawMotionProbe implements SensorEventListener {
 
     @Override public void onSensorChanged(SensorEvent event) {
         synchronized (lock) {
-            if (!active || received.length() >= 4096) return;
+            if (!active) return;
             if (event.sensor.getType() != 1 && event.sensor.getType() != 4) return;
-            try { received.put(sample(event.sensor.getType(), event.timestamp, event.values)); }
+            receivedCount++;
+            try {
+                JSONObject value = sample(event.sensor.getType(), event.timestamp, event.values);
+                if (received.length() < (boundedStream ? 128 : 4096)) received.put(value);
+                if (boundedStream) report.put(event.sensor.getType() == 1 ? "last_received_acceleration" : "last_received_gyroscope", value);
+            }
             catch (Exception ignored) {}
         }
     }
@@ -217,10 +241,14 @@ final class RawMotionProbe implements SensorEventListener {
                 report.put("last_send_ns", lastSendNs); report.put("maximum_gap_ns", maximumGapNs);
                 report.put("lease_required", leaseRequired); report.put("lease_deadline_ns", leaseDeadlineNs);
                 report.put("last_observation_ns", lastObservationNs);
-                report.put("sent_sample_count", sent.length()); report.put("received_sample_count", received.length());
+                report.put("sent_sample_count", index * 2);
+                report.put("received_sample_count", boundedStream ? receivedCount : received.length());
+                report.put("expected_rows", rows.size() * replayPasses);
+                report.put("current_replay_pass", index / rows.size());
                 // 回放中不序列化全量原始事件，避免主线程快照/大文本布局阻塞接收队列。
                 // 完成或失败后再输出完整证据；运行中的计数不作为接收验收证明。
-                if (!active) { report.put("sent_samples", sent); report.put("received_samples", received); }
+                if (!active && !boundedStream) { report.put("sent_samples", sent); report.put("received_samples", received); }
+                if (boundedStream) { report.put("sent_audit_prefix", sent); report.put("received_audit_prefix", received); }
                 // 脱离工作线程中的可变对象，快照序列化不会遍历并发写入的JSONArray。
                 return new JSONObject(report.toString());
             } catch (Exception failure) { return new JSONObject(); }

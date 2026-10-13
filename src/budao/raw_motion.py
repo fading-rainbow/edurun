@@ -40,8 +40,16 @@ class RecordedProbeClip:
         return self.rows[-1][0]
 
 
-def bounded_clip(clip: MotionClip, seconds: int, source_sha256: str) -> RecordedProbeClip:
-    if type(seconds) is not int or not 1 <= seconds <= 10 or clip.duration < seconds:
+def bounded_clip(
+    clip: MotionClip, seconds: int, source_sha256: str, *, bounded_stream: bool = False
+) -> RecordedProbeClip:
+    maximum = 150 if bounded_stream else 10
+    if (
+        type(bounded_stream) is not bool
+        or type(seconds) is not int
+        or not 1 <= seconds <= maximum
+        or clip.duration < seconds
+    ):
         raise ValueError("原始IMU探测只允许1–10整数秒，不循环、不填补或缩放")
     count = seconds * 50 + 1
     if len(clip.times) < count or not np.allclose(
@@ -59,7 +67,9 @@ def bounded_clip(clip: MotionClip, seconds: int, source_sha256: str) -> Recorded
     return RecordedProbeClip(output.getvalue().encode("utf-8"), rows, source_sha256)
 
 
-def prepare_recorded_probe(root: Path, source: Path, seconds: int) -> RecordedProbeClip:
+def prepare_recorded_probe(
+    root: Path, source: Path, seconds: int, *, bounded_stream: bool = False
+) -> RecordedProbeClip:
     """核对官方压缩包固定摘要，并重建全CSV，不仅相信可修改的来源JSON标签。"""
     source = private_file(root, source)
     manifest_file = private_file(root, source.with_suffix(".json"))
@@ -99,7 +109,9 @@ def prepare_recorded_probe(root: Path, source: Path, seconds: int) -> RecordedPr
             raise ValueError
     except (ValueError, TypeError, KeyError, OSError):
         raise ValueError("公开运动来源或文件摘要未通过；不回显配置，不写入设备") from None
-    return bounded_clip(MotionClip(source), seconds, manifest["csv_sha256"])
+    return bounded_clip(
+        MotionClip(source), seconds, manifest["csv_sha256"], bounded_stream=bounded_stream
+    )
 
 
 def match_recorded_snapshot(
@@ -201,9 +213,13 @@ def match_recorded_snapshot(
     return result
 
 
-def write_motion_probe(bridge: MuMuBridge, payload: bytes):
+def write_motion_probe(bridge: MuMuBridge, payload: bytes, *, bounded_stream: bool = False):
     """只写自有诊断App固定文件，stdin传样本；核对摘要后原子替换，不碰认证目录。"""
-    if not isinstance(bridge, MuMuBridge) or not 0 < len(payload) <= 128 * 1024:
+    if (
+        type(bounded_stream) is not bool
+        or not isinstance(bridge, MuMuBridge)
+        or not 0 < len(payload) <= (1024 * 1024 if bounded_stream else 128 * 1024)
+    ):
         raise ValueError("只允许本项目MuMu有界诊断载荷")
     bridge.check_device()
     process = bridge.runner(

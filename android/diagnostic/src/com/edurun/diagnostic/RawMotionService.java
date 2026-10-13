@@ -69,7 +69,9 @@ public final class RawMotionService extends Service {
         } catch (Exception failure) { stopSelf(); return START_NOT_STICKY; }
         requestId = request;
         probe = new RawMotionProbe((SensorManager) getSystemService(SENSOR_SERVICE),
-            new File(getFilesDir(), "motion-probe.csv"), false, request);
+            new File(getFilesDir(), "motion-probe.csv"), false, request,
+            intent.getBooleanExtra("motion_bounded_stream", false),
+            intent.getIntExtra("motion_replay_passes", 1));
         probe.requireLease(observed, ttl); probe.start(); handler.post(snapshot);
         return START_NOT_STICKY;
     }

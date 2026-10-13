@@ -289,9 +289,11 @@ def test_native_sender_is_bounded_and_metadata_does_not_block_reception():
     source = (root / "android/diagnostic/src/com/edurun/diagnostic/RawMotionProbe.java").read_text(
         "utf-8"
     )
-    assert "duration > 10" in source and "lines.length > 502" in source
+    assert "duration > (boundedStream ? 150 : 10)" in source
+    assert "lines.length > (boundedStream ? 7502 : 502)" in source
     assert "gap > 100_000_000L" in source and "delay = 250" in source
-    assert "received.length() >= 4096" in source and 'requestId.matches("[a-f0-9]{32}")' in source
+    assert "received.length() < (boundedStream ? 128 : 4096)" in source
+    assert 'requestId.matches("[a-f0-9]{32}")' in source
     assert "new HandlerThread" in source and "if (!active)" in source
     assert "setAccessible" not in source and "hidden_api_policy" not in source
     builder = (root / "scripts/Build-Diagnostic.ps1").read_text("utf-8")
