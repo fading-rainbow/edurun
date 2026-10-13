@@ -14,7 +14,9 @@ New-Item -ItemType Directory -Path $classes,$dex -Force | Out-Null
 function Check-Exit { if ($LASTEXITCODE -ne 0) { throw "构建命令失败：$LASTEXITCODE" } }
 $activity = if ($Component -eq 'launcher') {'LauncherActivity'} else {'ReceiverActivity'}
 $source = Join-Path $root "android\$Component\src\com\edurun\$Component\$activity.java"
-& "$java\bin\javac.exe" -source 8 -target 8 -encoding UTF-8 -classpath $androidJar -d $classes $source
+$sources = @($source)
+if ($Component -eq 'receiver') { $sources += Join-Path $root 'android\receiver\src\com\edurun\receiver\ReceiverService.java' }
+& "$java\bin\javac.exe" -source 8 -target 8 -encoding UTF-8 -classpath $androidJar -d $classes @sources
 Check-Exit
 $jar = Join-Path $build 'classes.jar'
 & "$java\bin\jar.exe" cf $jar -C $classes .

@@ -1,10 +1,11 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 from test_runtime import frame
 
 from budao.mumu import MuMuBridge
-from budao.start_connector import RunCapture, StartConnector
+from budao.start_connector import CAPTURE_GUARD, CAPTURE_MOTION_TAIL, RunCapture, StartConnector
 from budao.target import RUN_ACTIVITY, TARGET
 
 
@@ -95,3 +96,72 @@ def test_capture_refuses_protected_page_before_constructing_ui():
     )
     with pytest.raises(ValueError, match="不读取"):
         connector.capture(pixels=True)
+
+
+class BatchDevice(Device):
+    def __init__(self, *, version="4.3.0", uptime="12.34 8.00", changed=False, nonce="b" * 32):
+        super().__init__()
+        self.version, self.uptime, self.changed, self.nonce = version, uptime, changed, nonce
+        self.calls = []
+
+    def run(self, *args):
+        self.calls.append(args)
+        f = super().run(*args)
+        if args == ("shell", CAPTURE_GUARD):
+            return f + f"\n__EDURUN_PACKAGE__\nversionName={self.version}\nversionCode=230"
+        if args == ("shell", CAPTURE_MOTION_TAIL):
+            if self.changed:
+                f = "mCurrentFocus=Window{123 u0 com.tencent.mobileqq/.LoginActivity}"
+            return (
+                f
+                + "\n__EDURUN_CLOCK__\n"
+                + self.uptime
+                + "\n__EDURUN_MOTION__\n"
+                + json.dumps({"package": "com.edurun.diagnostic", "request_id": self.nonce})
+            )
+        return f
+
+
+def batch_connector(device):
+    from test_target import hierarchy
+
+    connector = StartConnector(device, object())
+    connector.ui = SimpleNamespace(
+        device=SimpleNamespace(dump_hierarchy=lambda: hierarchy(tv_gps_strength="GPS信号优"))
+    )
+    return connector
+
+
+def test_shared_capture_keeps_version_focus_checks_and_exact_android_clock():
+    device = BatchDevice()
+    result = batch_connector(device).capture(motion_request="b" * 32)
+    assert result.android_observed_ns == 12_340_000_000
+    assert result.motion_snapshot["request_id"] == "b" * 32
+    assert device.calls == [("shell", CAPTURE_GUARD), ("shell", CAPTURE_MOTION_TAIL)]
+    assert result.frame.inspection.gps_label == "GPS信号优"
+
+
+def test_shared_capture_ignores_old_motion_nonce_without_inventing_current_state():
+    result = batch_connector(BatchDevice(nonce="c" * 32)).capture(motion_request="b" * 32)
+    assert result.motion_snapshot is None and result.android_observed_ns == 12_340_000_000
+
+
+@pytest.mark.parametrize("value", ["-1.00 3.00", "NaN 3.00", "1.23", "1.234 2.000"])
+def test_shared_capture_rejects_unknown_android_clock(value):
+    with pytest.raises(ValueError, match="单调时钟"):
+        batch_connector(BatchDevice(uptime=value)).capture(motion_request="b" * 32)
+
+
+def test_shared_capture_foreground_change_and_version_still_fail_closed():
+    with pytest.raises(ValueError, match="前台"):
+        batch_connector(BatchDevice(changed=True)).capture(motion_request="b" * 32)
+    with pytest.raises(ValueError, match="版本"):
+        batch_connector(BatchDevice(version="other")).capture(motion_request="b" * 32)
+
+
+@pytest.mark.parametrize("value", [123, "shell; secret", "f" * 31])
+def test_invalid_motion_task_does_not_reach_device(value):
+    device = BatchDevice()
+    with pytest.raises(ValueError, match="任务标记"):
+        batch_connector(device).capture(motion_request=value)
+    assert not device.calls

@@ -128,7 +128,9 @@ class RuntimeDispatcher:
         )
         self.started = True
 
-    def update(self, frame: CapturedRunFrame) -> Decision:
+    def update(
+        self, frame: CapturedRunFrame, *, renew_motion: Callable[[], None] | None = None
+    ) -> Decision:
         if not self.started:
             self.worker.pause("尚未确认本次新会话开始")
             return Decision(action="pause", reason="当前会话开始关卡未通过")
@@ -145,6 +147,12 @@ class RuntimeDispatcher:
             self.finish_ready = decision.action == "finish_ready"
             return decision
         try:
+            # 运动服务只接受1秒内Android观察；先续期，避免等待位置IO锁消耗其时效。
+            # 回调必须由同一捕获帧构造；这里不制造时钟、原始数据或开始证据。
+            if renew_motion is not None:
+                if not callable(renew_motion):
+                    raise ValueError("运动续期必须来自本次已验证观察")
+                renew_motion()
             state = self.worker.check()
             position = state.position
             key = decision.action, decision.target

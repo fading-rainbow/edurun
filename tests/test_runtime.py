@@ -243,3 +243,44 @@ def test_human_verification_even_after_distance_threshold_does_not_continue(setu
     )
     assert dispatcher.update(prompt).action == "pause"
     assert not worker.engine.enabled
+
+
+def test_motion_renewal_precedes_position_io_lock(setup, monkeypatch):
+    dispatcher, worker, _, clock, _ = setup
+    dispatcher.start(witness())
+    clock[0] = 3
+    events = []
+    original = worker.check
+
+    def position_check():
+        events.append("position")
+        return original()
+
+    monkeypatch.setattr(worker, "check", position_check)
+    decision = dispatcher.update(frame(3), renew_motion=lambda: events.append("motion"))
+    assert decision.action == "base_route" and events == ["motion", "position"]
+
+
+def test_failed_motion_renewal_revokes_position_before_output(setup):
+    dispatcher, worker, bridge, clock, _ = setup
+    dispatcher.start(witness())
+    clock[0] = 3
+
+    def expired():
+        raise ValueError("Observation expired")
+
+    assert dispatcher.update(frame(3), renew_motion=expired).action == "pause"
+    worker._tick()
+    assert not worker.engine.enabled and bridge.locations == []
+
+
+def test_unknown_or_paused_page_never_renews_motion(setup):
+    dispatcher, _, _, clock, _ = setup
+    dispatcher.start(witness())
+    clock[0] = 3
+    assert (
+        dispatcher.update(
+            frame(3, control="paused"), renew_motion=lambda: pytest.fail("Do not renew on pause")
+        ).action
+        == "pause"
+    )

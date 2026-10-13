@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import secrets
 import time
@@ -25,12 +26,20 @@ from .target import (
 )
 from .ui import AppUI, focused_component
 
+CAPTURE_GUARD = "dumpsys window displays; echo __EDURUN_PACKAGE__; dumpsys package com.lptiyu.tanke"
+CAPTURE_MOTION_TAIL = (
+    "dumpsys window displays; echo __EDURUN_CLOCK__; cat /proc/uptime; "
+    "echo __EDURUN_MOTION__; run-as com.edurun.diagnostic cat files/motion-service.json"
+)
+
 
 @dataclass(frozen=True)
 class RunCapture:
     frame: CapturedRunFrame
     hierarchy: str
     screenshot: Image.Image | None
+    android_observed_ns: int | None = None
+    motion_snapshot: dict | None = None
 
 
 class StartConnector:
@@ -49,24 +58,62 @@ class StartConnector:
         self.clock, self.sleep, self.ui = clock, sleep, None
         self.used_requests: set[str] = set()
 
-    def capture(self, *, pixels: bool = False) -> RunCapture:
+    def capture(self, *, pixels: bool = False, motion_request: str | None = None) -> RunCapture:
+        if motion_request is not None and (
+            not isinstance(motion_request, str) or not re.fullmatch(r"[a-f0-9]{32}", motion_request)
+        ):
+            raise ValueError("运动观察只接受本次独立任务标记，不接受命令或认证信息")
         expected = (TARGET, RUN_ACTIVITY)
-        if focused_component(self.bridge.run("shell", "dumpsys", "window", "displays")) != expected:
+        # 同一守卫内批量只读，减少每帧重复管理器查询；没有省略设备、版本或焦点检查。
+        guard = self.bridge.run("shell", CAPTURE_GUARD)
+        focus, marker, meta = guard.partition("__EDURUN_PACKAGE__")
+        if focused_component(focus) != expected:
             raise ValueError("当前不是目标运行页；不读取登录/密码/摄像头界面")
-        meta = self.bridge.run("shell", "dumpsys", "package", TARGET)
-        if not re.search(r"^\s*versionName=4\.3\.0\s*$", meta, re.M) or not re.search(
-            r"^\s*versionCode=230\b", meta, re.M
+        if (
+            not marker
+            or not re.search(r"^\s*versionName=4\.3\.0\s*$", meta, re.M)
+            or not re.search(r"^\s*versionCode=230\b", meta, re.M)
         ):
             raise ValueError("目标版本尚未采集，不读取或点击控件")
-        self.ui = self.ui or self.ui_factory(self.bridge)
-        if focused_component(self.bridge.run("shell", "dumpsys", "window", "displays")) != expected:
-            raise ValueError("读取前前台发生变化")
+        if self.ui is None:
+            self.ui = self.ui_factory(self.bridge)
+            # 初次连接UI服务可能较慢，连接完成后重新核对；已连接帧不重复构造。
+            if (
+                focused_component(self.bridge.run("shell", "dumpsys", "window", "displays"))
+                != expected
+            ):
+                raise ValueError("读取前前台发生变化")
         tree = self.ui.device.dump_hierarchy()
         sampled = self.clock()
         if len(tree) > 2 * 1024 * 1024 or "<!DOCTYPE" in tree.upper() or "<!ENTITY" in tree.upper():
             raise ValueError("未知界面树")
         image = self.ui.screenshot() if pixels else None
-        if focused_component(self.bridge.run("shell", "dumpsys", "window", "displays")) != expected:
+        android_ns, motion = None, None
+        if motion_request is None:
+            tail = self.bridge.run("shell", "dumpsys", "window", "displays")
+        else:
+            value = self.bridge.run("shell", CAPTURE_MOTION_TAIL)
+            tail, clock_marker, rest = value.partition("__EDURUN_CLOCK__")
+            uptime, motion_marker, state = rest.partition("__EDURUN_MOTION__")
+            if (
+                not clock_marker
+                or not motion_marker
+                or not re.fullmatch(r"\s*\d+\.\d{2}\s+\d+\.\d{2}\s*", uptime)
+            ):
+                raise ValueError("共享观察缺少实际Android单调时钟；不续期")
+            seconds, decimals = uptime.split()[0].split(".")
+            android_ns = int(seconds) * 1_000_000_000 + int(decimals) * 10_000_000
+            try:
+                candidate = json.loads(state) if len(state) <= 2 * 1024 * 1024 else None
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("package") == "com.edurun.diagnostic"
+                    and candidate.get("request_id") == motion_request
+                ):
+                    motion = candidate
+            except ValueError:
+                pass  # 无状态/旧任务不是本次运动已启动证据。
+        if focused_component(tail) != expected:
             raise ValueError("读取过程中前台发生变化，不接受背景控件")
         if face_verification_required(tree):
             view = TargetInspection(
@@ -94,6 +141,8 @@ class StartConnector:
             CapturedRunFrame(frame_id=secrets.token_hex(16), sampled_at=sampled, inspection=view),
             tree,
             image,
+            android_ns,
+            motion,
         )
 
     def begin_once(self, request_id: str, authorize: Callable[[], bool]) -> StartWitness:

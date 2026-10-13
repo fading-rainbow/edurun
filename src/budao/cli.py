@@ -25,6 +25,7 @@ from .sensor_probe import probe_mumu_sensors
 from .simulation import demo_config, simulate
 from .startup_compat import configure_startup_compat
 from .target import inspect_target
+from .target_motion_probe import target_foreground_motion_probe
 
 
 def apk_metadata(path: Path) -> dict:
@@ -111,6 +112,17 @@ def main() -> int:
     cross.add_argument("--seconds", type=int, choices=range(1, 11), default=5)
     cross.add_argument("--withhold-renewal", action="store_true")
     cross.add_argument("--output", type=Path, required=True)
+    target_motion = commands.add_parser(
+        "probe-mumu-target-motion", help="保持目标暂停页前台的短独立UID接收诊断，不开始或移动"
+    )
+    target_motion.add_argument(
+        "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
+    )
+    target_motion.add_argument(
+        "--csv", type=Path, default=Path(".local/motion/realworld/s1-running-waist-60s-50hz.csv")
+    )
+    target_motion.add_argument("--seconds", type=int, choices=range(1, 11), default=5)
+    target_motion.add_argument("--output", type=Path, required=True)
     mumu_target = commands.add_parser("inspect-mumu-target", help="只读本项目MuMu上的正式打卡卡片")
     mumu_target.add_argument(
         "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
@@ -190,6 +202,17 @@ def main() -> int:
             result = prepare_realworld(args.directory, args.seconds)
         elif args.command == "prepare-recorded-site":
             result = prepare_recorded_site(Path.cwd())
+        elif args.command == "probe-mumu-target-motion":
+            output = private_file(Path.cwd(), args.output, must_exist=False)
+            if output.exists():
+                raise ValueError("证据文件已存在，不覆盖旧实验")
+            clip = prepare_recorded_probe(Path.cwd(), args.csv, args.seconds)
+            result = target_foreground_motion_probe(MuMuBridge(args.receipt), clip)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            with output.open("x", encoding="utf-8") as stream:
+                json.dump(result, stream, ensure_ascii=False, indent=2)
+            result = {k: v for k, v in result.items() if k not in {"sender", "receiver"}}
+            result["output"] = str(output)
         elif args.command == "probe-mumu-foreground-motion":
             output = private_file(Path.cwd(), args.output, must_exist=False)
             if output.exists():
