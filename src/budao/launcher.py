@@ -31,6 +31,21 @@ class PreparationCoordinator:
     def check(self, photo_ready: bool = False) -> dict:
         if not self.lock.acquire(blocking=False):
             return self.status()
+        return self._check_locked(photo_ready)
+
+    def begin_check(self, photo_ready: bool = False) -> dict:
+        """立即确认后台观察任务；重复请求不排队，也不重复导航。"""
+        if not self.lock.acquire(blocking=False):
+            return self.status()
+        task = threading.Thread(target=self._check_locked, args=(photo_ready,), daemon=True)
+        try:
+            task.start()
+        except Exception:
+            self.lock.release()
+            raise
+        return self.status()
+
+    def _check_locked(self, photo_ready: bool) -> dict:
         try:
             checks = []
 
@@ -96,6 +111,17 @@ class PreparationCoordinator:
                 "records_submitted": 0,
                 "needs_human_verification_if_requested": True,
                 "login_server_auth_proven": False,
+            }
+            return self.last_report
+        except Exception:
+            # 异步任务异常也要产生终态；不让客户端永远checking或回显原始异常。
+            self.last_report = {
+                "state": "blocked",
+                "message": "准备检查未完成；未开始乐跑，请稍后重新检查",
+                "checks": [],
+                "ready": False,
+                "run_started": False,
+                "records_submitted": 0,
             }
             return self.last_report
         finally:
@@ -194,8 +220,9 @@ class LauncherHandler(BaseHTTPRequestHandler):
             self.reply(400, {"message": "请求结构不符合要求；不回显输入"})
             return
         # 登录准备可正常打开客户端；未通过运行条件时不开始跑步、位置输出或上传。
-        report = self.server.coordinator.check(data["photo_ready"])
-        self.reply(200 if self.path == "/v1/check" else 409, report)
+        report = self.server.coordinator.begin_check(data["photo_ready"])
+        code = 202 if report["state"] == "checking" else (200 if self.path == "/v1/check" else 409)
+        self.reply(code, report)
 
 
 def serve_launcher(root: Path, profile: Path, config_file: Path, port: int = 8766):

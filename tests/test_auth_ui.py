@@ -154,3 +154,31 @@ def test_prepared_login_returns_to_launcher_without_starting_run_or_auth_copy():
         LAUNCHER + "/.LauncherActivity",
     ]
     assert not any("run-as" in call or "input" in call for call in device.calls)
+
+
+def test_slow_mine_page_is_observed_without_second_click():
+    device = Device((LAUNCHER, LAUNCHER + ".LauncherActivity"))
+    ticks = iter([0, 13, 14, 15, 16])
+    clicks = []
+
+    class UI:
+        reads = 0
+
+        def dump_hierarchy(self):
+            self.reads += 1
+            return profile(tv_title="加载中") if self.reads <= 2 else profile()
+
+        def __call__(self, **kwargs):
+            return SimpleNamespace(
+                count=1 if kwargs.get("text") == "我的" else 0,
+                click=lambda: clicks.append(kwargs),
+            )
+
+    result = prepare_current_login(
+        device,
+        ui_factory=lambda _: SimpleNamespace(device=UI()),
+        clock=lambda: next(ticks),
+        sleep=lambda _: None,
+    )
+    assert result["state"] == "logged_in_ui"
+    assert len(clicks) == 1

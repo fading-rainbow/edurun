@@ -117,7 +117,9 @@ def prepare_current_login(
         if any(t != MAIN for t in expanded):
             return {"state": "existing_target_session", "server_auth_proven": False}
         bridge.run("shell", "am", "start", "-n", TARGET + "/.activities.splash.SplashActivity")
-    deadline = clock() + 12
+    # 冷启动、广告和安全守卫RPC也消耗时间；界面更新不是点击完成即同步完成。
+    # 后台异步检查允许30秒观察窗口，仍不重试启动/切换受保护页面。
+    deadline = clock() + 30
     ui = None
     selected = False
     try:
@@ -147,7 +149,10 @@ def prepare_current_login(
             if result["state"] != "unknown":
                 return result
             mine = ui.device(resourceId=TARGET + ":id/tv_mine", text="我的")
-            if selected or mine.count != 1:
+            if selected:
+                sleep(0.3)
+                continue
+            if mine.count != 1:
                 return result
             bridge.check_device()
             if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != focus:

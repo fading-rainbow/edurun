@@ -1,5 +1,6 @@
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -35,11 +36,21 @@ def headers():
     return {"X-Launcher-Token": "x" * 43}
 
 
+def wait_report(client):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        report = client.get("/v1/status", headers=headers()).json()
+        if report["state"] != "checking":
+            return report
+        time.sleep(0.01)
+    pytest.fail("Asynchronous preparation did not finish")
+
+
 def test_one_click_preparation_reports_real_missing_gates_without_starting(tmp_path):
     with server(tmp_path) as (_app, client):
         result = client.post("/v1/start", headers=headers(), json={"photo_ready": True})
-        assert result.status_code == 409
-        report = result.json()
+        assert result.status_code in {202, 409}
+        report = wait_report(client)
         assert not report["ready"] and not report["run_started"]
         assert report["records_submitted"] == 0
         checks = {c["key"]: c for c in report["checks"]}
@@ -55,7 +66,8 @@ def test_pairing_required_no_secrets_returned(tmp_path):
         assert client.get("/v1/status").status_code == 403
         assert client.post("/v1/start", json={"photo_ready": True}).status_code == 403
         response = client.post("/v1/check", headers=headers(), json={"photo_ready": False})
-        assert response.status_code == 200 and "x" * 43 not in response.text
+        assert response.status_code in {200, 202} and "x" * 43 not in response.text
+        wait_report(client)
         assert (
             client.get("/.local/launcher/current/service.json", headers=headers()).status_code
             == 404
@@ -131,6 +143,63 @@ def test_repeated_check_does_not_queue_navigation_or_block_status(tmp_path):
         release.set()
         task.join(3)
     assert app.status()["state"] == "blocked"
+
+
+def test_http_check_acknowledges_before_slow_navigation_and_never_queues(tmp_path):
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    class Device:
+        def check_device(self):
+            pass
+
+    def prepare(device):
+        calls.append(device)
+        started.set()
+        release.wait(3)
+        return {"state": "logged_in_ui"}
+
+    with server(tmp_path) as (app, client):
+        app.coordinator.bridge_factory = lambda _: Device()
+        app.coordinator.login_preparer = prepare
+        try:
+            first = client.post("/v1/check", headers=headers(), json={"photo_ready": True})
+            assert first.status_code == 202 and first.json()["state"] == "checking"
+            assert started.wait(1)
+            for _ in range(3):
+                repeat = client.post("/v1/start", headers=headers(), json={"photo_ready": True})
+                assert repeat.status_code == 202
+                assert client.get("/v1/status", headers=headers()).json()["state"] == "checking"
+            assert len(calls) == 1
+        finally:
+            release.set()
+        report = wait_report(client)
+        assert next(c for c in report["checks"] if c["key"] == "login")["state"] == "pass"
+        assert not report["run_started"] and report["records_submitted"] == 0
+
+
+def test_native_polling_does_not_reissue_post_on_slow_or_disconnected_check():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "android/launcher/src/com/edurun/launcher/LauncherActivity.java"
+    ).read_text("utf-8")
+    assert 'exchange("/v1/status", token, null)' in source
+    assert source.count('exchange(path, token, new JSONObject().put("photo_ready", ready))') == 1
+    assert "Thread.sleep(500)" in source
+    assert "检查可能仍在进行" in source
+
+
+def test_async_unexpected_failure_has_terminal_redacted_report(tmp_path, monkeypatch):
+    def fail(*_args):
+        raise RuntimeError("PRIVATE_TEST_ERROR")
+
+    monkeypatch.setattr("budao.launcher.preflight_profile", fail)
+    with server(tmp_path) as (_app, client):
+        client.post("/v1/check", headers=headers(), json={"photo_ready": True})
+        report = wait_report(client)
+        assert report["state"] == "blocked" and not report["run_started"]
+        assert "PRIVATE_TEST_ERROR" not in str(report)
+        assert not _app.coordinator.lock.locked()
 
 
 @pytest.mark.parametrize("origin", ["http://evil.example", "null", "http://127.0.0.1"])

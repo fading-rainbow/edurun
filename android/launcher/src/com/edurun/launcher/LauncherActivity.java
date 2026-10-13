@@ -108,13 +108,36 @@ public final class LauncherActivity extends Activity {
         } finally { temporary.delete(); }
     }
 
+    private JSONObject exchange(String path, String token, JSONObject body) throws Exception {
+        // 固定loopback；经本项目adb reverse进入本机127.0.0.1，不连接中转站或公网。
+        HttpURLConnection connection = (HttpURLConnection)
+            new URL("http://127.0.0.1:8766" + path).openConnection();
+        try {
+            // 兼容尚未重启的旧同步后台；新版异步后台会立即返回202。
+            connection.setConnectTimeout(3000); connection.setReadTimeout(60000);
+            connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty("X-Launcher-Token", token);
+            if (body != null) {
+                connection.setRequestMethod("POST"); connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json");
+                byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(bytes.length);
+                try (java.io.OutputStream output = connection.getOutputStream()) { output.write(bytes); }
+            }
+            int code = connection.getResponseCode();
+            if (code != 200 && code != 202 && code != 409) throw new IllegalStateException();
+            try (InputStream input = code < 400 ? connection.getInputStream() : connection.getErrorStream()) {
+                return new JSONObject(new String(readLimited(input, 32768), StandardCharsets.UTF_8));
+            }
+        } finally { connection.disconnect(); }
+    }
+
     private void request(String path) {
         if (busy) return;
         busy = true;
         start.setEnabled(false); status.setText("正在核对准备条件…");
         final boolean ready = photoReady();
         io.execute(() -> {
-            HttpURLConnection connection = null;
             String message;
             JSONObject response = null;
             try {
@@ -125,24 +148,21 @@ public final class LauncherActivity extends Activity {
                 }
                 String token = paired.getString("token");
                 if (!token.matches("[A-Za-z0-9_-]{40,100}")) throw new IllegalArgumentException();
-                // 固定loopback；经本项目adb reverse进入本机127.0.0.1，不连接中转站或公网。
-                connection = (HttpURLConnection) new URL("http://127.0.0.1:8766" + path).openConnection();
-                connection.setConnectTimeout(3000); connection.setReadTimeout(20000);
-                connection.setRequestMethod("POST"); connection.setDoOutput(true);
-                connection.setInstanceFollowRedirects(false);
-                connection.setRequestProperty("X-Launcher-Token", token);
-                connection.setRequestProperty("Content-Type", "application/json");
-                byte[] body = new JSONObject().put("photo_ready", ready).toString().getBytes(StandardCharsets.UTF_8);
-                connection.setFixedLengthStreamingMode(body.length);
-                connection.getOutputStream().write(body);
-                int code = connection.getResponseCode();
-                try (InputStream input = code < 400 ? connection.getInputStream() : connection.getErrorStream()) {
-                    response = new JSONObject(new String(readLimited(input, 32768), StandardCharsets.UTF_8));
+                response = exchange(path, token, new JSONObject().put("photo_ready", ready));
+                long deadline = android.os.SystemClock.elapsedRealtime() + 60000;
+                // 只轮询本次任务状态；超时/断线不重发POST、不排队开启第二次导航。
+                while ("checking".equals(response.optString("state"))
+                        && android.os.SystemClock.elapsedRealtime() < deadline) {
+                    Thread.sleep(500);
+                    response = exchange("/v1/status", token, null);
+                }
+                if ("checking".equals(response.optString("state"))) {
+                    response.put("message", "后台仍在检查；稍后查看结果，不要重复操作乐跑客户端");
                 }
                 message = response.optString("message", "没有收到明确准备结果");
             } catch (Exception error) {
-                message = "后台未连接或未完成配对；未开始乐跑";
-            } finally { if (connection != null) connection.disconnect(); }
+                message = "后台连接中断；检查可能仍在进行，可稍后查看状态";
+            }
             final String result = message; final JSONObject report = response;
             runOnUiThread(() -> {
                 if (!alive) return;
