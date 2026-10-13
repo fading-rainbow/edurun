@@ -60,14 +60,28 @@ def login_ui(hierarchy: str) -> dict:
         if nickname is not None and nickname.get("text") in {"立即登录", "点击登录", "登录"}:
             return {**result, "state": "login_required"}
         if (
-            nickname is None
-            or not nickname.get("text")
-            or len(nickname.get("text")) > 128
+            (nickname is not None and (not nickname.get("text") or len(nickname.get("text")) > 128))
             or uid is None
             or not re.fullmatch(r"ID:[0-9]{1,16}", uid.get("text", ""))
         ):
             return result
         status = one("tv_status")
+        if nickname is None:
+            # 4.3.0/code230实际冷启动的学生资料页不暴露昵称资源ID。
+            # 只接收已认证、正数ID与唯一头像布局的完整组合；缺项不能当登录成功。
+            avatars = [
+                n
+                for n in nodes
+                if n.get("package") == TARGET
+                and n.get("resource-id") == TARGET + ":id/user_avatar_layout"
+            ]
+            if (
+                status is None
+                or status.get("text") != "已认证学生"
+                or int(uid.get("text")[3:]) <= 0
+                or len(avatars) != 1
+            ):
+                return result
         return {
             **result,
             "state": "logged_in_ui",

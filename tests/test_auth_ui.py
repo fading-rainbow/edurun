@@ -69,6 +69,38 @@ def test_password_foreign_hidden_duplicate_and_entities_cannot_pass():
     assert login_ui(profile(user_nickname="立即登录"))["state"] == "login_required"
 
 
+def nickless_profile(**override):
+    root = ET.fromstring(profile(**override))
+    for n in list(root):
+        if n.get("resource-id") == TARGET + ":id/user_nickname":
+            root.remove(n)
+    ET.SubElement(
+        root,
+        "node",
+        {
+            "package": TARGET,
+            "resource-id": TARGET + ":id/user_avatar_layout",
+            "visible-to-user": "true",
+        },
+    )
+    return ET.tostring(root, encoding="unicode")
+
+
+def test_actual_nickless_student_profile_requires_all_collected_identity_controls():
+    result = login_ui(nickless_profile())
+    assert result["state"] == "logged_in_ui" and result["student_verified_ui"]
+    assert not result["server_auth_proven"] and "12345678" not in str(result)
+    for override in ({"user_uid": "ID:0"}, {"tv_status": "未认证"}, {"tv_title": "其它"}):
+        assert login_ui(nickless_profile(**override))["state"] == "unknown"
+    root = ET.fromstring(nickless_profile())
+    avatar = next(n for n in root if n.get("resource-id") == TARGET + ":id/user_avatar_layout")
+    avatar.set("visible-to-user", "false")
+    assert login_ui(ET.tostring(root, encoding="unicode"))["state"] == "unknown"
+    avatar.set("visible-to-user", "true")
+    root.append(ET.fromstring(ET.tostring(avatar)))
+    assert login_ui(ET.tostring(root, encoding="unicode"))["state"] == "unknown"
+
+
 class Device(MuMuBridge):
     def __init__(self, focus=(TARGET, MAIN), *, tasks="", version="4.3.0", changed=False):
         self.focus, self.tasks, self.version, self.changed = focus, tasks, version, changed
