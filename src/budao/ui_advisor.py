@@ -37,6 +37,84 @@ class UIAdvice(StrictModel):
         return self
 
 
+SYSTEMUI = "com.android.systemui"
+_STATUS_BAR_HEIGHT = 56
+# 遮盖后若系统界面覆盖超过该比例，则视为通知栏/全屏覆盖层，直接拒绝发送。
+_MAX_SYSTEMUI_COVERAGE = 0.5
+_VERIFICATION_LABELS = ("人脸验证", "身份验证", "拍摄本人", "请输入密码", "请输入验证码")
+_VERIFICATION_IDS = ("liveness", "face_verify", "faceverify", "face_detect", "faceid")
+# 系统界面中这些控件属于状态栏/导航栏，可保留；其余SystemUI控件一律按通知处理。
+_SYSTEMUI_BENIGN = (
+    "status_bar",
+    "statusbar",
+    "navigation",
+    "nav_bar",
+    "navbar",
+    "clock",
+    "battery",
+    "wifi",
+    "signal",
+    "system_icon",
+    "notification_icon",
+    "notificationicon",
+)
+_SYSTEMUI_BENIGN_EXACT = frozenset(
+    {"home", "back", "recent_apps", "home_button", "back_button", "home_handle"}
+)
+_SYSTEMUI_SENSITIVE = (
+    "heads_up",
+    "headsup",
+    "notification",
+    "shade",
+    "qs_",
+    "quick_settings",
+    "conversation",
+    "bubble",
+    "expandable",
+    "avatar",
+)
+_BOUNDS = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+
+def _resource_name(node) -> str:
+    return node.get("resource-id", "").lower().rpartition(":id/")[2]
+
+
+def _node_bounds(node, image: Image.Image, message: str) -> tuple[int, int, int, int]:
+    match = _BOUNDS.fullmatch(node.get("bounds", ""))
+    if match is None:
+        raise ValueError(message)
+    left, top, right, bottom = map(int, match.groups())
+    if not 0 <= left <= right <= image.width or not 0 <= top <= bottom <= image.height:
+        raise ValueError(message)
+    return left, top, right, bottom
+
+
+def _systemui_masks(root, image: Image.Image) -> list[tuple[int, int, int, int]]:
+    """返回必须遮盖的SystemUI范围；通知节点缺少/越界范围时拒绝。"""
+    boxes: list[tuple[int, int, int, int]] = []
+
+    def walk(node, inherited: str):
+        state = inherited
+        if node.tag == "node" and node.get("package") == SYSTEMUI:
+            name = _resource_name(node)
+            if any(p in name for p in _SYSTEMUI_SENSITIVE) and not any(
+                p in name for p in ("notification_icon", "notificationicon")
+            ):
+                state = "sensitive"
+            elif state != "sensitive" and (
+                name in _SYSTEMUI_BENIGN_EXACT or any(p in name for p in _SYSTEMUI_BENIGN)
+            ):
+                state = "benign"
+            if state != "benign":
+                boxes.append(_node_bounds(node, image, "系统通知范围未知，不发送"))
+        for child in node:
+            walk(child, state)
+
+    walk(root, "neutral")
+    return boxes
+
+
 def redacted_ui_image(image: Image.Image, hierarchy: str) -> bytes:
     if (
         len(hierarchy) > 2 * 1024 * 1024
@@ -44,13 +122,38 @@ def redacted_ui_image(image: Image.Image, hierarchy: str) -> bytes:
         or "<!ENTITY" in hierarchy.upper()
     ):
         raise ValueError("未知界面树，不发送")
-    root = ET.fromstring(hierarchy)
+    try:
+        root = ET.fromstring(hierarchy)
+    except ET.ParseError:
+        raise ValueError("未知界面树，不发送") from None
     nodes = list(root.iter("node"))
     if any(n.get("password") == "true" for n in nodes):
         raise ValueError("密码页面不发送")
+    if face_verification_required(hierarchy) or any(
+        label in (n.get("text", "") + n.get("content-desc", ""))
+        for n in nodes
+        for label in _VERIFICATION_LABELS
+    ):
+        raise ValueError("本人验证页面不发送")
+    for n in nodes:
+        package = n.get("package", "")
+        if "camera" in package.lower() or any(p in _resource_name(n) for p in _VERIFICATION_IDS):
+            raise ValueError("相机或本人验证页面不发送")
+        if package and package not in {TARGET, SYSTEMUI, "android"}:
+            raise ValueError("其他应用窗口不发送")
     result = image.convert("RGB").copy()
+    system_boxes = _systemui_masks(root, result)
+    if system_boxes:
+        coverage = Image.new("L", result.size, 0)
+        cover_draw = ImageDraw.Draw(coverage)
+        for box in system_boxes:
+            cover_draw.rectangle(box, fill=255)
+        if coverage.histogram()[255] >= _MAX_SYSTEMUI_COVERAGE * result.width * result.height:
+            raise ValueError("系统界面覆盖过大，不发送")
     draw = ImageDraw.Draw(result)
-    draw.rectangle((0, 0, result.width, min(56, result.height)), fill="black")
+    draw.rectangle((0, 0, result.width, min(_STATUS_BAR_HEIGHT, result.height)), fill="black")
+    for box in system_boxes:
+        draw.rectangle(box, fill="black")
     for node in nodes:
         identity = node.get("resource-id", "").lower()
         if not any(
