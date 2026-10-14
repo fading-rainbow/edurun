@@ -205,7 +205,14 @@ class SessionRunner:
                     publish(dict(report))
                     waited = self._human_wait(cancel, authorize, pause_record=True)
                     if waited is None:
-                        report.update(state="paused", message="换窗后运行页未确认；保留记录")
+                        report.update(
+                            state="paused",
+                            message=(
+                                "收到停止请求或达到有界运行时限"
+                                if cancel.is_set()
+                                else "换窗后运行页未确认；保留记录"
+                            ),
+                        )
                         break
                     deadline += waited
                     window_deadline = self.clock() + 600
@@ -226,7 +233,14 @@ class SessionRunner:
                     publish(dict(report))
                     waited = self._human_wait(cancel, authorize)
                     if waited is None:
-                        report.update(state="paused", message="广告后运行页未确认；保留记录")
+                        report.update(
+                            state="paused",
+                            message=(
+                                "收到停止请求或达到有界运行时限"
+                                if cancel.is_set()
+                                else "广告后运行页未确认；保留记录"
+                            ),
+                        )
                         break
                     deadline += waited
                     window_deadline = self.clock() + 600
@@ -262,7 +276,14 @@ class SessionRunner:
                         cancel, authorize, map_recovery=self.resolve_checkpoint
                     )
                     if waited is None:
-                        report.update(state="paused", message="地图恢复未通过；保留记录")
+                        report.update(
+                            state="paused",
+                            message=(
+                                "收到停止请求或达到有界运行时限"
+                                if cancel.is_set()
+                                else "地图恢复未通过；保留记录"
+                            ),
+                        )
                         break
                     deadline += waited
                     window_deadline = self.clock() + 600
@@ -365,6 +386,8 @@ class SessionRunner:
                         report["app_pause_confirmed"] = (
                             self.connector.capture().frame.inspection.run_control_state == "paused"
                         )
+                    elif current.run_control_state == "paused":
+                        report["app_pause_confirmed"] = True
                 except Exception:
                     report["app_pause_unconfirmed"] = True
             self.lock.release()
@@ -395,8 +418,12 @@ class SessionRunner:
                     raise ValueError("地图恢复前暂停控件或时效未知")
                 bridge.check_device()
                 button.long_click(duration=2)
+                self.sleep(0.2)
             if map_recovery is not None:
-                map_recovery(authorize)
+                try:
+                    map_recovery(authorize)
+                except ValueError:
+                    return None
         resumed = False
         while not cancel.is_set() and authorize() is True and self.clock() - began < 600:
             focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))

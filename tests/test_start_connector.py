@@ -289,3 +289,27 @@ def test_observation_end_clock_rejects_backward_slow_or_unknown_read(after):
 
     with pytest.raises(ValueError, match="结束时钟"):
         batch_connector(EndClockDevice()).capture(motion_request="b" * 32)
+
+
+def test_face_verification_pixels_true_never_captures_screenshot():
+    from xml.sax.saxutils import quoteattr
+
+    device = BatchDevice()
+    connector = batch_connector(device)
+    prompt = "本次跑步需要进行人脸验证\n验证成功后可继续跑步"
+    xml = (
+        "<hierarchy>"
+        f'<node package="{TARGET}" resource-id="{TARGET}:id/alert_dialog_content" '
+        f'text={quoteattr(prompt)} visible-to-user="true"/>'
+        f'<node package="{TARGET}" resource-id="{TARGET}:id/dialog_confirm" '
+        'text="去验证" visible-to-user="true"/>'
+        "</hierarchy>"
+    )
+    connector.ui.device.dump_hierarchy = lambda: xml
+    connector.ui.screenshot = lambda: pytest.fail(
+        "Screenshot must not be captured for face verification"
+    )
+    result = connector.capture(pixels=True)
+    assert result.screenshot is None
+    assert result.frame.inspection.issues == ("human_face_verification_required",)
+    assert result.frame.inspection.state == "unavailable"

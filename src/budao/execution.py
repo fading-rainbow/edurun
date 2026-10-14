@@ -141,7 +141,12 @@ class ExecutionCoordinator:
                     raise ValueError("运行数字未知")
                 public[key] = value[key]
         with self.state_lock:
-            if self.cancel.is_set() and state in {"preparing", "starting", "running"}:
+            if self.cancel.is_set() and state in {
+                "preparing",
+                "starting",
+                "running",
+                "recovering",
+            }:
                 return  # 延迟进度不能覆盖已经发出的停止请求。
             self.report.update(public)
 
@@ -171,12 +176,20 @@ class ExecutionCoordinator:
             if not start:
                 return
             if not self._eligible_preparation(report) or self.runner_factory is None:
+                expired = any(
+                    check.get("detail") == "过期记录，需用户处理"
+                    for check in report.get("checks", [])
+                )
                 self._set(
                     self.status()
                     | {
                         "state": "blocked",
                         "ready": False,
-                        "message": "准备或执行组件未就绪；未开始乐跑",
+                        "message": (
+                            "过期记录，需用户处理"
+                            if expired
+                            else "准备或执行组件未就绪；未开始乐跑"
+                        ),
                     }
                 )
                 return

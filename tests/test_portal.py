@@ -219,3 +219,301 @@ def test_safety_entry_is_single_and_requires_exact_zone(monkeypatch):
             sleep=lambda _: None,
             expected_zone="当前跑区：其他跑区",
         )
+
+
+@pytest.mark.parametrize("card_state", ["pending", "assigned"])
+def test_dialog_restore_autopauses_running_and_calls_restored_callback(monkeypatch, card_state):
+    from datetime import datetime
+
+    from test_runtime import frame
+
+    from budao.target import CheckpointCard
+
+    class RestoreBridge(Bridge):
+        def __init__(self):
+            super().__init__()
+            self.phase = "dialog"
+            self.focus = MAIN
+
+    class RestoreUI:
+        def __init__(self, bridge):
+            self.bridge, self.device = bridge, self
+            self.long_clicks = []
+
+        def __call__(self, **kwargs):
+            name = kwargs.get("resourceId", "").split("/")[-1]
+            count = 0
+            if self.bridge.phase == "dialog" and name in {"dialog_confirm", "alert_dialog_content"}:
+                count = 1
+            elif (
+                self.bridge.phase in {"running", "paused"} and name == "tv_start_pause_continue_run"
+            ):
+                count = 1
+
+            def click():
+                self.bridge.clicks.append(name)
+                if name == "dialog_confirm":
+                    self.bridge.phase = "running"
+                    self.bridge.focus = RUN_ACTIVITY
+
+            def long_click(**_kw):
+                self.long_clicks.append(name)
+                self.bridge.phase = "paused"
+
+            return SimpleNamespace(count=count, click=click, long_click=long_click)
+
+        def dump_hierarchy(self):
+            if self.bridge.phase == "dialog":
+                return (
+                    f'<hierarchy><node package="{TARGET}" visible-to-user="true" '
+                    f'resource-id="{TARGET}:id/alert_dialog_content" '
+                    'text="检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?"/>'
+                    f'<node package="{TARGET}" visible-to-user="true" '
+                    f'resource-id="{TARGET}:id/dialog_confirm" text="恢复"/></hierarchy>'
+                )
+            return "<hierarchy/>"
+
+    saved = frame(10, control="paused", distance_m=100, elapsed=500).inspection
+    metrics = {
+        "distance_m": 110,
+        "elapsed_s": 515,
+        "completed_checkpoints": 0,
+        "counter_label": "已打卡",
+    }
+    b = RestoreBridge()
+    monkeypatch.setattr("budao.portal.parse_run_metrics", lambda _: metrics)
+    monkeypatch.setattr(
+        "budao.portal.parse_run_control_state",
+        lambda _: b.phase if b.phase in {"running", "paused"} else "unknown",
+    )
+    test_card = CheckpointCard(number=1, name="打卡点1", state=card_state, distance_m=10)
+    monkeypatch.setattr("budao.portal.parse_checkpoint_cards", lambda _: [test_card])
+
+    restored_calls = []
+    res = enter_formal_zero(
+        b,
+        lambda: True,
+        ui_factory=RestoreUI,
+        sleep=lambda _: None,
+        pause_expected=saved,
+        restore_stamp=datetime(2026, 10, 15, 10, 30),
+        recovery_grade=5,
+        on_restored=lambda tree, clock: restored_calls.append((tree, clock)),
+    )
+    assert res == 5
+    assert b.clicks == ["dialog_confirm"]
+    assert len(restored_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "case,dialog_text,stamp,pause_completed,metrics_override,card_override,expected_err",
+    [
+        (
+            "date_mismatch",
+            "检测到您在2026年10月14日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {},
+            None,
+            "不是本助手当前新会话",
+        ),
+        (
+            "time_drift_gt_120s",
+            "检测到您在2026年10月15日 10:35分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {},
+            None,
+            "不是本助手当前新会话",
+        ),
+        (
+            "regex_mismatch",
+            "检测到您的记录未完成",
+            "2026-10-15T10:30:00",
+            0,
+            {},
+            None,
+            "缺少本次新开始日期",
+        ),
+        (
+            "completed_pause_expected",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            1,
+            {},
+            None,
+            "计数/里程/用时不一致",
+        ),
+        (
+            "completed_metrics",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {"completed_checkpoints": 1},
+            None,
+            "计数/里程/用时不一致",
+        ),
+        (
+            "distance_too_small",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {"distance_m": 89},
+            None,
+            "计数/里程/用时不一致",
+        ),
+        (
+            "distance_too_large",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {"distance_m": 131},
+            None,
+            "计数/里程/用时不一致",
+        ),
+        (
+            "elapsed_backward",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {"elapsed_s": 499},
+            None,
+            "计数/里程/用时不一致",
+        ),
+        (
+            "elapsed_too_large",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {"elapsed_s": 531},
+            None,
+            "计数/里程/用时不一致",
+        ),
+        (
+            "cards_completed",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {},
+            "completed",
+            "计数/里程/用时不一致",
+        ),
+        (
+            "cards_wrong_number",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {},
+            "wrong_number",
+            "计数/里程/用时不一致",
+        ),
+        (
+            "cards_empty",
+            "检测到您在2026年10月15日 10:30分开始跑步的记录未完成，是否恢复跑步?",
+            "2026-10-15T10:30:00",
+            0,
+            {},
+            "empty",
+            "计数/里程/用时不一致",
+        ),
+    ],
+)
+def test_dialog_restore_rejections(
+    monkeypatch,
+    case,
+    dialog_text,
+    stamp,
+    pause_completed,
+    metrics_override,
+    card_override,
+    expected_err,
+):
+    from datetime import datetime
+
+    from test_runtime import frame
+
+    from budao.target import CheckpointCard
+
+    class RestoreBridge(Bridge):
+        def __init__(self):
+            super().__init__()
+            self.phase = "dialog"
+            self.focus = MAIN
+
+    class RestoreUI:
+        def __init__(self, bridge):
+            self.bridge, self.device = bridge, self
+
+        def __call__(self, **kwargs):
+            name = kwargs.get("resourceId", "").split("/")[-1]
+            count = (
+                1
+                if (
+                    (
+                        self.bridge.phase == "dialog"
+                        and name in {"dialog_confirm", "alert_dialog_content"}
+                    )
+                    or (
+                        self.bridge.phase in {"running", "paused"}
+                        and name == "tv_start_pause_continue_run"
+                    )
+                )
+                else 0
+            )
+
+            def click():
+                if name == "dialog_confirm":
+                    self.bridge.phase = "running"
+                    self.bridge.focus = RUN_ACTIVITY
+
+            def long_click(**_kw):
+                self.bridge.phase = "paused"
+
+            return SimpleNamespace(count=count, click=click, long_click=long_click)
+
+        def dump_hierarchy(self):
+            if self.bridge.phase == "dialog":
+                return (
+                    f'<hierarchy><node package="{TARGET}" visible-to-user="true" '
+                    f'resource-id="{TARGET}:id/alert_dialog_content" text="{dialog_text}"/>'
+                    f'<node package="{TARGET}" visible-to-user="true" '
+                    f'resource-id="{TARGET}:id/dialog_confirm" text="恢复"/></hierarchy>'
+                )
+            return "<hierarchy/>"
+
+    saved = frame(10, control="paused", distance_m=100, elapsed=500).inspection
+    if pause_completed != 0:
+        saved = saved.model_copy(update={"completed_checkpoints": pause_completed})
+    metrics = {
+        "distance_m": 105,
+        "elapsed_s": 510,
+        "completed_checkpoints": 0,
+        "counter_label": "已打卡",
+    }
+    metrics.update(metrics_override)
+    b = RestoreBridge()
+    monkeypatch.setattr("budao.portal.parse_run_metrics", lambda _: metrics)
+    monkeypatch.setattr(
+        "budao.portal.parse_run_control_state",
+        lambda _: b.phase if b.phase in {"running", "paused"} else "unknown",
+    )
+    if card_override == "completed":
+        cards = [CheckpointCard(number=1, name="点1", state="completed", distance_m=0)]
+    elif card_override == "wrong_number":
+        cards = [CheckpointCard(number=2, name="点2", state="assigned", distance_m=10)]
+    elif card_override == "empty":
+        cards = []
+    else:
+        cards = [CheckpointCard(number=1, name="点1", state="assigned", distance_m=10)]
+    monkeypatch.setattr("budao.portal.parse_checkpoint_cards", lambda _: cards)
+
+    with pytest.raises(ValueError, match=expected_err):
+        enter_formal_zero(
+            b,
+            lambda: True,
+            ui_factory=RestoreUI,
+            sleep=lambda _: None,
+            pause_expected=saved,
+            restore_stamp=datetime.fromisoformat(stamp),
+            recovery_grade=5,
+        )

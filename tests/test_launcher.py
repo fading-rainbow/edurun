@@ -296,3 +296,36 @@ def test_native_stop_has_its_own_control_executor_and_long_poll_never_reposts_st
     assert '"/v1/start".equals(path) ? 3000000 : 60000' in source
     assert '"running".equals(state)' in source and '"stopping".equals(state)' in source
     assert source.count('exchange(path, token, new JSONObject().put("photo_ready", ready))') == 1
+
+
+def test_cross_day_expired_record_preparation_and_http_status_not_permanently_busy(tmp_path):
+    class Device:
+        def check_device(self):
+            pass
+
+    with server(tmp_path) as (app, client):
+        app.coordinator.bridge_factory = lambda _: Device()
+        app.coordinator.login_preparer = lambda _b: {
+            "state": "expired_record",
+            "detail": "过期记录，需用户处理",
+            "server_auth_proven": False,
+        }
+        # Check endpoint
+        check_resp = client.post("/v1/check", headers=headers(), json={"photo_ready": True})
+        assert check_resp.status_code in {200, 202}
+        report = wait_report(client)
+        assert report["state"] == "blocked"
+        assert report["message"] == "过期记录，需用户处理"
+        assert not report["ready"] and not report["run_started"]
+        login_check = next(c for c in report["checks"] if c["key"] == "login")
+        assert login_check["state"] == "unknown"
+        assert login_check["detail"] == "过期记录，需用户处理"
+
+        # Start endpoint returns 409 blocked with same message and releases slot immediately
+        start_resp = client.post("/v1/start", headers=headers(), json={"photo_ready": True})
+        assert start_resp.status_code in {202, 409}
+        start_report = wait_report(client)
+        assert start_report["state"] == "blocked"
+        assert start_report["message"] == "过期记录，需用户处理"
+        assert not start_report["run_started"]
+        assert not app.execution.slot.locked()

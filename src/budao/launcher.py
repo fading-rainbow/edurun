@@ -101,7 +101,11 @@ class PreparationCoordinator:
                 "pass" if visible_login else "unknown",
                 "本次已登录界面已核对；服务端授权仍由实际开始流程复核"
                 if visible_login
-                else "当前客户端登录界面未确认；已有会话/必要认证不被覆盖",
+                else (
+                    login.get("detail")
+                    if isinstance(login.get("detail"), str)
+                    else "当前客户端登录界面未确认；已有会话/必要认证不被覆盖"
+                ),
             )
             item("motion", "自然运动输入", "not_ready", "MuMu自然步频尚未实际验收")
             item("runtime", "完整自动流程", "not_ready", "开始、观察、驱动与成绩核验尚未完整接通")
@@ -125,11 +129,14 @@ class PreparationCoordinator:
                             "runtime": "有界执行编排",
                         }[check["key"]]
             ready = all(check["state"] == "pass" for check in checks)
+            expired = any(check.get("detail") == "过期记录，需用户处理" for check in checks)
             self.last_report = {
                 "state": "ready" if ready else "blocked",
-                "message": "本次有界执行准备通过，尚未开始"
-                if ready
-                else "准备条件尚未全部通过，未开始乐跑",
+                "message": (
+                    "本次有界执行准备通过，尚未开始"
+                    if ready
+                    else ("过期记录，需用户处理" if expired else "准备条件尚未全部通过，未开始乐跑")
+                ),
                 "checks": checks,
                 "ready": ready,
                 "run_started": False,

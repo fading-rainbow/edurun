@@ -63,7 +63,10 @@ class Motion(ForegroundMotionClient):
 class Dispatcher(RuntimeDispatcher):
     def __init__(self, bridge):
         self.worker = SimpleNamespace(
-            bridge=bridge, thread=None, engine=SimpleNamespace(position=GeoPoint(lon=120, lat=30))
+            bridge=bridge,
+            thread=None,
+            engine=SimpleNamespace(position=GeoPoint(lon=120, lat=30)),
+            pause=lambda *_: None,
         )
         self.pace_range_s_per_km, self.asynchronous_renewals = (180, 600), True
         self.started = False
@@ -277,3 +280,83 @@ def test_rollover_pauses_window_and_resumes_same_operation_without_second_begin(
     assert windows == [{"pause_record": True}]
     assert result["state"] == "finish_ready" and result["records_submitted"] == 0
     assert c.calls.count("begin") == 1 and any(x["state"] == "recovering" for x in reports)
+
+
+def test_map_recovery_failure_pauses_and_preserves_record_without_crashing(tmp_path, monkeypatch):
+    from budao.target import CheckpointCard
+
+    r, b, c, d, m = setup(tmp_path)
+    card = CheckpointCard(number=1, name="未知点", state="assigned", distance_m=10)
+    old_capture = c.capture
+
+    def capture_with_unknown(**kwargs):
+        res = old_capture(**kwargs)
+        if kwargs.get("renew_motion"):
+            res = RunCapture(
+                res.frame.model_copy(
+                    update={
+                        "inspection": res.frame.inspection.model_copy(
+                            update={"checkpoint_cards": (card,)}
+                        )
+                    }
+                ),
+                res.hierarchy,
+                res.screenshot,
+                res.android_observed_ns,
+                res.motion_snapshot,
+            )
+        return res
+
+    monkeypatch.setattr(c, "capture", capture_with_unknown)
+
+    def failing_recovery(_authorize):
+        raise ValueError("Simulated map recovery failure")
+
+    r.resolve_checkpoint = failing_recovery
+    reports = []
+    result = r.run(lambda: True, reports.append)
+    assert result["state"] == "paused"
+    assert result["message"] == "地图恢复未通过；保留记录"
+    assert result["mode_restored_normal"] and result["app_pause_confirmed"]
+    assert any(x["state"] == "recovering" for x in reports)
+
+
+def test_cancel_during_human_wait_pauses_with_stop_message(tmp_path, monkeypatch):
+    import threading
+
+    from budao.target import CheckpointCard
+
+    r, b, c, d, m = setup(tmp_path)
+    card = CheckpointCard(number=1, name="未知点", state="assigned", distance_m=10)
+    old_capture = c.capture
+    cancel = threading.Event()
+
+    def capture_with_unknown(**kwargs):
+        res = old_capture(**kwargs)
+        if kwargs.get("renew_motion"):
+            res = RunCapture(
+                res.frame.model_copy(
+                    update={
+                        "inspection": res.frame.inspection.model_copy(
+                            update={"checkpoint_cards": (card,)}
+                        )
+                    }
+                ),
+                res.hierarchy,
+                res.screenshot,
+                res.android_observed_ns,
+                res.motion_snapshot,
+            )
+        return res
+
+    monkeypatch.setattr(c, "capture", capture_with_unknown)
+
+    def cancel_on_recovery(_authorize):
+        cancel.set()
+        raise ValueError("Cancelled during recovery")
+
+    r.resolve_checkpoint = cancel_on_recovery
+    reports = []
+    result = r.run(lambda: True, reports.append, cancel=cancel)
+    assert result["state"] == "paused"
+    assert result["message"] == "收到停止请求或达到有界运行时限"

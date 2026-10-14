@@ -171,3 +171,49 @@ def test_execution_slot_does_not_accept_component_claims_of_submission_or_succes
     ):
         with pytest.raises(ValueError):
             c._publish_runner(value | change)
+
+
+def test_cancel_with_late_recovering_state_never_overwrites_stopping():
+    release = threading.Event()
+    publish_event = threading.Event()
+
+    class LateRecoveringRunner(SessionRunner):
+        def __init__(self):
+            self.started = True
+
+        def run(self, authorize, publish, _cancel):
+            assert authorize() is True
+            publish(
+                {
+                    "state": "running",
+                    "run_started": True,
+                    "records_submitted": 0,
+                    "record_valid_proven": False,
+                }
+            )
+            publish_event.set()
+            assert release.wait(3)
+            # Try to publish recovering after stop was requested
+            publish(
+                {
+                    "state": "recovering",
+                    "run_started": True,
+                    "records_submitted": 0,
+                    "record_valid_proven": False,
+                }
+            )
+            return {
+                "state": "paused",
+                "run_started": True,
+                "records_submitted": 0,
+                "record_valid_proven": False,
+            }
+
+    c = ExecutionCoordinator(Preparation(), LateRecoveringRunner)
+    c.begin(start=True, photo_ready=True)
+    assert publish_event.wait(1)
+    stopped = c.stop()
+    assert stopped["state"] == "stopping"
+    release.set()
+    result = wait_terminal(c)
+    assert result["state"] == "paused"

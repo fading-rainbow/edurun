@@ -273,7 +273,16 @@ class LiveRuntime:
     def prepare_login(self, bridge):
         if self.settings.resume_evidence is None:
             return prepare_current_login(bridge)
-        directory, original, saved, stamp, _ = self._resume_ticket(bridge)
+        try:
+            directory, original, saved, stamp, _ = self._resume_ticket(bridge)
+        except ValueError as error:
+            if "跨日" in str(error):
+                return {
+                    "state": "expired_record",
+                    "detail": "过期记录，需用户处理",
+                    "server_auth_proven": False,
+                }
+            raise
         focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
         if focus == (LAUNCHER, LAUNCHER + ".LauncherActivity"):
             tops = target_task_tops(bridge.run("shell", "dumpsys", "activity", "activities"))
@@ -363,6 +372,18 @@ class LiveRuntime:
         )
         self._template()
         prepare_recorded_probe(self.root, self.settings.motion_csv, 150, bounded_stream=True)
+        runtime_ok = normal
+        runtime_detail = "已装配单次开始与有界调度；结束保存及有效成绩另行核验"
+        if self.settings.resume_evidence is not None:
+            try:
+                self._resume_ticket(bridge)
+            except ValueError as error:
+                if "跨日" in str(error):
+                    runtime_ok = False
+                    runtime_detail = "过期记录，需用户处理"
+                else:
+                    runtime_ok = False
+                    runtime_detail = "暂停凭据未就绪；未开始乐跑"
         return {
             "route": (
                 "pass" if routes_ok else "not_ready",
@@ -373,8 +394,8 @@ class LiveRuntime:
                 "链路有5秒独立接收证据；当前长片段全量及目标步数未验收",
             ),
             "runtime": (
-                "pass" if normal else "not_ready",
-                "已装配单次开始与有界调度；结束保存及有效成绩另行核验",
+                "pass" if runtime_ok else "not_ready",
+                runtime_detail,
             ),
         }
 
