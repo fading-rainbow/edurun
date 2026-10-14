@@ -78,8 +78,12 @@ def enter_formal_zero(
                 run_selected = True
             elif not entered:
                 grade = ui.device(resourceId=TARGET + ":id/tv_run_data")
-                if grade.count != 1 or not re.fullmatch(r"[0-9]{1,4}", grade.get_text()):
+                if grade.count > 1:
                     raise ValueError("当前已完成次数未确认；不开始")
+                # 点击标签后，成绩数据/插屏广告异步到达；缺字段只等待，不重复点击标签。
+                if grade.count == 0 or not re.fullmatch(r"[0-9]{1,4}", grade.get_text()):
+                    sleep(0.2)
+                    continue
                 grade_frames.append(int(grade.get_text()))
                 if len(grade_frames) >= 2:
                     if grade_frames[-1] != grade_frames[-2]:

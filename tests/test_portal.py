@@ -91,3 +91,30 @@ def test_nonzero_page_not_treated_as_new_session(monkeypatch):
     )
     with pytest.raises(ValueError, match="零状态"):
         enter_formal_zero(Bridge(), lambda: True, ui_factory=UI, sleep=lambda _: None)
+
+
+def test_slow_grade_or_interstitial_waits_without_second_tab_or_start(monkeypatch):
+    monkeypatch.setattr(
+        "budao.portal.parse_run_metrics",
+        lambda _: {
+            "distance_m": 0,
+            "elapsed_s": 0,
+            "completed_checkpoints": 0,
+            "counter_label": "已打卡",
+        },
+    )
+
+    class DelayedUI(UI):
+        grade_reads = 0
+
+        def __call__(self, **kwargs):
+            control = super().__call__(**kwargs)
+            if kwargs.get("resourceId") == TARGET + ":id/tv_run_data":
+                self.grade_reads += 1
+                if self.grade_reads <= 3:
+                    control.count = 0
+            return control
+
+    bridge = Bridge()
+    assert enter_formal_zero(bridge, lambda: True, ui_factory=DelayedUI, sleep=lambda _: None) == 1
+    assert bridge.clicks == ["tv_run", "tv_enterRun", "tv_cancle"]
