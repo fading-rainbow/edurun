@@ -11,6 +11,20 @@ if (Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyCont
     throw 'Port 8766 already has a listener; do not start a duplicate service.'
 }
 $python = Join-Path $root '.venv/Scripts/python.exe'
+$bootRequest = Join-Path $private 'launcher/boot-once.json'
+if (Test-Path -LiteralPath $bootRequest -PathType Leaf) {
+    $request = Get-Content -LiteralPath $bootRequest -Raw | ConvertFrom-Json
+    if ($request.request -ne 'open_owned_player' -or $request.expires_epoch -lt [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) {
+        throw 'Owned-player boot request is invalid or expired.'
+    }
+    # Consume only our fixed, one-shot setup request. No record/login files are touched.
+    Remove-Item -LiteralPath $bootRequest
+    Push-Location $root
+    try {
+        & $python -c "from pathlib import Path; from budao.mumu import MuMuBridge; b=MuMuBridge(Path('.local/setup/mumu-owned-instance.json'),allow_stopped=True); b.start_owned()"
+        if ($LASTEXITCODE -ne 0) { throw 'Owned player startup was not confirmed.' }
+    } finally { Pop-Location }
+}
 $profile = Join-Path $root '.local/profiles/current/profile.native-trial.json'
 $output = Join-Path $root '.local/launcher-service.stdout.txt'
 $errorLog = Join-Path $root '.local/launcher-service.stderr.txt'

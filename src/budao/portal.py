@@ -35,6 +35,7 @@ def enter_formal_zero(
     on_grade=None,
     restore_stamp=None,
     recovery_grade=None,
+    on_restored=None,
 ):
     if not isinstance(bridge, MuMuBridge) or not callable(authorize):
         raise ValueError("正式入口仅支持独立MuMu及明确许可")
@@ -176,6 +177,27 @@ def enter_formal_zero(
                         click_button.long_click(duration=2)
                         sleep(0.2)
                         continue
+                    if restored:
+                        cards = parse_checkpoint_cards(tree)
+                        if (
+                            pause_expected.completed_checkpoints != 0
+                            or metrics["completed_checkpoints"] != 0
+                            or not pause_expected.distance_m - 10
+                            <= metrics["distance_m"]
+                            <= pause_expected.distance_m + 30
+                            or not pause_expected.elapsed_s
+                            <= metrics["elapsed_s"]
+                            <= pause_expected.elapsed_s + 30
+                            or parse_run_control_state(tree) != "paused"
+                            or len(cards) != 1
+                            or cards[0].number != 1
+                            or cards[0].state not in {"pending", "assigned"}
+                            or not grade_frames
+                        ):
+                            raise ValueError("恢复后计数/里程/用时不一致，保留暂停记录")
+                        if on_restored is not None:
+                            on_restored(tree, clock())
+                        return grade_frames[-1]
                     if (
                         not entered
                         or not grade_frames

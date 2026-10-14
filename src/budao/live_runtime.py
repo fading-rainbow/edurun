@@ -31,7 +31,14 @@ from .sensor_probe import NORMAL, sensor_mode
 from .session_runner import SessionRunner
 from .start_button import StartButtonTemplate
 from .start_connector import StartConnector
-from .target import RUN_ACTIVITY, TARGET
+from .target import (
+    RUN_ACTIVITY,
+    TARGET,
+    TargetInspection,
+    parse_checkpoint_cards,
+    parse_run_control_state,
+    parse_run_metrics,
+)
 from .ui import focused_component
 
 
@@ -270,7 +277,7 @@ class LiveRuntime:
         focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
         if focus == (LAUNCHER, LAUNCHER + ".LauncherActivity"):
             tops = target_task_tops(bridge.run("shell", "dumpsys", "activity", "activities"))
-            if tops not in ([RUN_ACTIVITY], [MAIN]):
+            if tops not in ([], [RUN_ACTIVITY], [MAIN]):
                 raise ValueError("助手背后的任务并非唯一的本次暂停运行页")
             bridge.run(
                 "shell",
@@ -303,6 +310,24 @@ class LiveRuntime:
                 (directory / "grade-before-recovery.xml").write_text(tree, "utf-8")
                 self._resume_grade = (original.request_id, time.monotonic(), count)
 
+            def restored(tree, sampled):
+                view = TargetInspection(
+                    package=TARGET,
+                    activity=RUN_ACTIVITY,
+                    version="4.3.0",
+                    state="metrics",
+                    run_control_state=parse_run_control_state(tree),
+                    checkpoint_cards=parse_checkpoint_cards(tree),
+                    **parse_run_metrics(tree),
+                )
+                frame = CapturedRunFrame(
+                    frame_id=secrets.token_hex(16), sampled_at=sampled, inspection=view
+                )
+                self._restored_pause = (original.request_id, frame)
+                (directory / "normal-restored-pause.json").write_text(
+                    frame.model_dump_json(indent=2), "utf-8"
+                )
+
             count = enter_formal_zero(
                 bridge,
                 lambda: True,
@@ -311,6 +336,7 @@ class LiveRuntime:
                 on_grade=save_grade,
                 restore_stamp=stamp,
                 recovery_grade=previous_grade,
+                on_restored=restored,
             )
             self._resume_grade = (original.request_id, time.monotonic(), count)
         if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != (
@@ -417,6 +443,13 @@ class LiveRuntime:
 
         if ticket is not None:
             directory, original, saved, stamp, grade = ticket
+            restored = getattr(self, "_restored_pause", None)
+            if (
+                restored is not None
+                and restored[0] == original.request_id
+                and 0 <= time.monotonic() - restored[1].sampled_at < 120
+            ):
+                saved = restored[1]
             baseline = getattr(self, "_resume_grade", None)
             if (
                 baseline is not None

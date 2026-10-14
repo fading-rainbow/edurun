@@ -111,8 +111,9 @@ class StartConnector:
         sampled = self.clock()
         if len(tree) > 2 * 1024 * 1024 or "<!DOCTYPE" in tree.upper() or "<!ENTITY" in tree.upper():
             raise ValueError("未知界面树")
-        image = self.ui.screenshot() if pixels else None
-        if face_verification_required(tree):
+        face_required = face_verification_required(tree)
+        image = self.ui.screenshot() if pixels and not face_required else None
+        if face_required:
             view = TargetInspection(
                 package=TARGET,
                 activity=RUN_ACTIVITY,
