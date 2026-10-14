@@ -1,15 +1,22 @@
-"""已采集4.3.0的正式入口；仅导航到零状态，不点击开始或恢复旧记录。"""
+"""4.3.0正常入口；零状态或显式绑定的当天暂停记录，不开始新跑步。"""
 
 from __future__ import annotations
 
 import re
 import time
 from collections.abc import Callable
+from datetime import datetime
 
 from .auth_ui import LAUNCHER, MAIN, SPLASH, target_task_tops
 from .finish_connector import field
 from .mumu import MuMuBridge
-from .target import RUN_ACTIVITY, TARGET, parse_run_metrics
+from .target import (
+    RUN_ACTIVITY,
+    TARGET,
+    parse_checkpoint_cards,
+    parse_run_control_state,
+    parse_run_metrics,
+)
 from .ui import KNOWN_AD_COMPONENT, AppUI, dismiss_known_ad, focused_component
 
 BEFORE = TARGET + ".activities.school_run.RunBeforeActivity"
@@ -24,6 +31,10 @@ def enter_formal_zero(
     sleep=time.sleep,
     expected_zone: str | None = None,
     scene_helper=None,
+    pause_expected=None,
+    on_grade=None,
+    restore_stamp=None,
+    recovery_grade=None,
 ):
     if not isinstance(bridge, MuMuBridge) or not callable(authorize):
         raise ValueError("正式入口仅支持独立MuMu及明确许可")
@@ -61,6 +72,7 @@ def enter_formal_zero(
     grade_frames = []
     safety_confirmed = False
     advised = False
+    restored = False
     while clock() < deadline and authorize() is True:
         current = focus()
         if current is None or current == (TARGET, SPLASH):
@@ -82,6 +94,27 @@ def enter_formal_zero(
                 if focus() != current or authorize() is not True:
                     raise ValueError("广告关闭许可改变")
                 close.click()
+            elif pause_expected is not None and field(tree, "dialog_confirm") == "恢复":
+                content = field(tree, "alert_dialog_content")
+                match = re.fullmatch(
+                    r"检测到您在(\d{4})年(\d{1,2})月(\d{1,2})日 (\d{2}):(\d{2})分"
+                    r"开始跑步的记录未完成，是否恢复跑步\?",
+                    content or "",
+                )
+                if restored or not match or not isinstance(restore_stamp, datetime):
+                    raise ValueError("恢复提示缺少本次新开始日期，不恢复")
+                date = datetime(*map(int, match.groups()))
+                if (
+                    date.date() != restore_stamp.date()
+                    or not 0
+                    <= (date - restore_stamp.replace(second=0, microsecond=0)).total_seconds()
+                    <= 120
+                ):
+                    raise ValueError("恢复提示不是本助手当前新会话，不点击")
+                if not grade_frames and type(recovery_grade) is int:
+                    grade_frames.append(recovery_grade)
+                click("dialog_confirm", "恢复", current)
+                restored, entered, run_selected = True, True, True
             elif ui.device(resourceId=TARGET + ":id/tv_title", text="安全提示").count == 1:
                 if (
                     not entered
@@ -108,6 +141,8 @@ def enter_formal_zero(
                 if len(grade_frames) >= 2:
                     if grade_frames[-1] != grade_frames[-2]:
                         raise ValueError("开始前成绩发生变化；不开始")
+                    if on_grade is not None:
+                        on_grade(grade_frames[-1], tree)
                     click("tv_enterRun", "开始乐跑", current)
                     entered = True
         else:
@@ -128,6 +163,36 @@ def enter_formal_zero(
                 rules_seen = True
             elif current == (TARGET, RUN_ACTIVITY):
                 metrics = parse_run_metrics(tree)
+                if pause_expected is not None:
+                    if restored and parse_run_control_state(tree) == "running":
+                        # Original app's normal Restore automatically restarts
+                        # its timer. Suspend immediately before further checks.
+                        click_button = ui.device(
+                            resourceId=TARGET + ":id/tv_start_pause_continue_run"
+                        )
+                        bridge.check_device()
+                        if click_button.count != 1 or focus() != current or authorize() is not True:
+                            raise ValueError("正常恢复后的暂停控件未知，未发送其他动作")
+                        click_button.long_click(duration=2)
+                        sleep(0.2)
+                        continue
+                    if (
+                        not entered
+                        or not grade_frames
+                        or parse_run_control_state(tree) != "paused"
+                        or any(
+                            metrics[k] != getattr(pause_expected, k)
+                            for k in (
+                                "distance_m",
+                                "elapsed_s",
+                                "completed_checkpoints",
+                                "counter_label",
+                            )
+                        )
+                        or parse_checkpoint_cards(tree) != pause_expected.checkpoint_cards
+                    ):
+                        raise ValueError("冷启动后原记录与本助手暂停凭据不一致；不开始或接管")
+                    return grade_frames[-1]
                 if (
                     entered
                     and not rules_seen

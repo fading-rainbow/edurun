@@ -147,7 +147,7 @@ public final class LauncherActivity extends Activity {
                 String token = pairedToken();
                 response = exchange(path, token, new JSONObject().put("photo_ready", ready));
                 long deadline = android.os.SystemClock.elapsedRealtime()
-                    + ("/v1/start".equals(path) ? 1200000 : 60000);
+                    + ("/v1/start".equals(path) ? 3000000 : 60000);
                 // 只轮询本次任务状态；超时/断线不重发POST、不排队开启第二次导航。
                 while (active(response.optString("state"))
                         && android.os.SystemClock.elapsedRealtime() < deadline) {

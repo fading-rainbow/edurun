@@ -293,6 +293,6 @@ def test_native_stop_has_its_own_control_executor_and_long_poll_never_reposts_st
         "controls.execute" in source
         and 'exchange("/v1/stop", pairedToken(), new JSONObject())' in source
     )
-    assert '"/v1/start".equals(path) ? 1200000 : 60000' in source
+    assert '"/v1/start".equals(path) ? 3000000 : 60000' in source
     assert '"running".equals(state)' in source and '"stopping".equals(state)' in source
     assert source.count('exchange(path, token, new JSONObject().put("photo_ready", ready))') == 1

@@ -218,3 +218,62 @@ def test_missing_fresh_same_position_gps_cannot_click_start_or_open_injection(tm
     result = r.run(lambda: True, lambda _: None)
     assert result["state"] == "error" and not result["start_action_attempted"]
     assert "begin" not in c.calls and not any("data_injection" in call for call in b.calls)
+
+
+def test_long_limit_cannot_bypass_clip_budget_without_900_second_window(tmp_path):
+    r, b, c, d, m = setup(tmp_path)
+    for rollover in (False, True):
+        with pytest.raises(ValueError):
+            SessionRunner(c, d, m, r.clip, maximum_s=1800, rollover_enabled=rollover)
+
+
+def test_rollover_pauses_window_and_resumes_same_operation_without_second_begin(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    old, b, c, d, m = setup(tmp_path)
+    source = replace(old.clip, rows=old.clip.rows[:-1] + ((150, *old.clip.rows[-1][1:]),))
+    c.source = source
+    m.replay_passes = 6
+    capture = c.capture
+
+    def cap(**kwargs):
+        result = capture(**kwargs)
+        result.motion_snapshot["raw_motion_probe"]["replay_passes"] = 6
+        return result
+
+    monkeypatch.setattr(c, "capture", cap)
+    r = SessionRunner(
+        c,
+        d,
+        m,
+        source,
+        maximum_s=1800,
+        rollover_enabled=True,
+        clock=lambda: c.clock[0],
+        sleep=lambda _: None,
+    )
+    calls = []
+
+    def dispatch(_):
+        if not calls:
+            calls.append("first")
+            c.clock[0] += 601
+            return Decision(action="base_route", reason="synthetic clock window")
+        return Decision(action="finish_ready", reason="synthetic terminal state")
+
+    monkeypatch.setattr(d, "update", dispatch)
+    windows = []
+
+    def rollover(cancel, authorize, **kwargs):
+        windows.append(kwargs)
+        c.clock[0] += 5
+        return 5
+
+    monkeypatch.setattr(r, "_human_wait", rollover)
+    reports = []
+    result = r.run(lambda: True, reports.append)
+    assert windows == [{"pause_record": True}]
+    assert result["state"] == "finish_ready" and result["records_submitted"] == 0
+    assert c.calls.count("begin") == 1 and any(x["state"] == "recovering" for x in reports)

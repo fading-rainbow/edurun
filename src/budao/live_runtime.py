@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
-from .auth_ui import LAUNCHER, SPLASH, prepare_current_login, target_task_tops
+from .auth_ui import LAUNCHER, MAIN, SPLASH, prepare_current_login, target_task_tops
 from .card_observer import NamedCardObserver
 from .driver import DriveEngine
 from .finish_connector import FinishConnector
@@ -41,11 +41,18 @@ class RuntimeSettings(StrictModel):
     motion_evidence_csv: Path | None = None
     independent_motion_evidence: Path
     start_template: Path
-    maximum_s: int = Field(default=900, ge=30, le=900)
+    maximum_s: int = Field(default=900, ge=30, le=1800)
+    rollover_enabled: bool = False
     normal_save_authorized: bool = False
     run_zone_label: str | None = Field(default=None, min_length=1, max_length=128)
     vision_config: Path | None = None
     resume_evidence: Path | None = None
+
+    @model_validator(mode="after")
+    def bounded_total(self):
+        if self.maximum_s > 900 and not self.rollover_enabled:
+            raise ValueError("超过单片段窗口必须显式启用暂停换窗")
+        return self
 
 
 def verify_motion_evidence(root: Path, path: Path, clip) -> bool:
@@ -196,7 +203,6 @@ class LiveRuntime:
             (directory / name).exists()
             for name in (
                 "save-action-attempted.json",
-                "resume-action-attempted.json",
                 "recovery-claimed.json",
             )
         ):
@@ -207,6 +213,17 @@ class LiveRuntime:
         saved = CapturedRunFrame.model_validate_json(
             (directory / "frames.jsonl").read_text("utf-8-sig").splitlines()[-1]
         )
+        if (directory / "resume-action-attempted.json").exists():
+            from .resume import ResumeWitness
+
+            continued = ResumeWitness.model_validate_json(
+                (directory / "resume-witness.json").read_text("utf-8-sig")
+            )
+            if (
+                continued.original != witness
+                or saved.sampled_at <= continued.second_running.sampled_at
+            ):
+                raise ValueError("上一继续动作未确认或缺少之后的新暂停，不重试")
         if (
             status.get("state") != "paused"
             or status.get("mode_restored_normal") is not True
@@ -249,11 +266,11 @@ class LiveRuntime:
     def prepare_login(self, bridge):
         if self.settings.resume_evidence is None:
             return prepare_current_login(bridge)
-        self._resume_ticket(bridge)
+        directory, original, saved, stamp, _ = self._resume_ticket(bridge)
         focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
         if focus == (LAUNCHER, LAUNCHER + ".LauncherActivity"):
             tops = target_task_tops(bridge.run("shell", "dumpsys", "activity", "activities"))
-            if tops != [RUN_ACTIVITY]:
+            if tops not in ([RUN_ACTIVITY], [MAIN]):
                 raise ValueError("助手背后的任务并非唯一的本次暂停运行页")
             bridge.run(
                 "shell",
@@ -268,6 +285,34 @@ class LiveRuntime:
                 "-f",
                 "0x10000000",
             )
+        focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
+        if focus == (TARGET, MAIN):
+            from .finish_connector import field
+
+            previous_grade = None
+            old_grade = directory / "grade-before-recovery.xml"
+            if (
+                old_grade.exists()
+                and datetime.fromtimestamp(old_grade.stat().st_mtime).date() == stamp.date()
+            ):
+                text = field(old_grade.read_text("utf-8-sig"), "tv_run_data")
+                if text and re.fullmatch(r"[0-9]{1,4}", text):
+                    previous_grade = int(text)
+
+            def save_grade(count, tree):
+                (directory / "grade-before-recovery.xml").write_text(tree, "utf-8")
+                self._resume_grade = (original.request_id, time.monotonic(), count)
+
+            count = enter_formal_zero(
+                bridge,
+                lambda: True,
+                expected_zone=self.settings.run_zone_label,
+                pause_expected=saved.inspection,
+                on_grade=save_grade,
+                restore_stamp=stamp,
+                recovery_grade=previous_grade,
+            )
+            self._resume_grade = (original.request_id, time.monotonic(), count)
         if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != (
             TARGET,
             RUN_ACTIVITY,
@@ -355,13 +400,30 @@ class LiveRuntime:
             motion,
             clip,
             maximum_s=self.settings.maximum_s,
+            rollover_enabled=self.settings.rollover_enabled,
             refresh_gps=refresh_gps,
             wait_for_human=True,
         )
         runner.save_authorized = self.settings.normal_save_authorized
+        recovery = None
+        if self.settings.vision_config is not None:
+            from .map_recovery import MapRecovery
+
+            sources = (ticket[0] / "input-observations.jsonl",) if ticket is not None else ()
+            recovery = MapRecovery(
+                self.root, self.settings.vision_config, connector, dispatcher, trace_sources=sources
+            )
+            runner.resolve_checkpoint = recovery.resolve
 
         if ticket is not None:
             directory, original, saved, stamp, grade = ticket
+            baseline = getattr(self, "_resume_grade", None)
+            if (
+                baseline is not None
+                and baseline[0] == original.request_id
+                and 0 <= time.monotonic() - baseline[1] < 120
+            ):
+                grade = baseline[2]
             runner.start_stamp, runner.grade_before = stamp, grade
             runner.original_request = original.request_id
             (evidence / "start-witness.json").write_text(
@@ -394,6 +456,16 @@ class LiveRuntime:
                 return resume_once(connector, original, saved, stamp, authorize)
 
             runner.resume_start = continue_start
+            if recovery is not None:
+
+                def prepare_map(authorize):
+                    if any(
+                        p.state == "assigned" and p.name not in dispatcher.observer.allowed_names
+                        for p in saved.inspection.checkpoint_cards
+                    ):
+                        recovery.resolve(authorize)
+
+                runner.prepare_start = prepare_map
             return runner
 
         def prepare_start(authorize):

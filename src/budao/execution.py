@@ -22,7 +22,7 @@ MESSAGES = {
     "accepted": "本次新记录与原App有效次数增量已核对",
     "submitted_unconfirmed": "已正常保存；有效成绩尚未确认，不重复提交",
     "save_unconfirmed": "结束或保存尚未确认；请核对原App，不重试",
-    "recovering": "已知广告出现；自动输入已停止，正在核对恢复",
+    "recovering": "界面或打卡地图恢复中；自动输入已停止，正在重新核对",
 }
 
 

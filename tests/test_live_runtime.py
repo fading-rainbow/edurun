@@ -43,6 +43,17 @@ def test_missing_or_same_uid_proof_is_not_an_independent_receiver(tmp_path):
     assert not verify_motion_evidence(tmp_path, Path(".local/proof.json"), sample)
 
 
+def test_long_run_requires_explicit_bounded_rollover_not_unlimited_clip():
+    assert (
+        RuntimeSettings.model_validate(
+            settings() | {"maximum_s": 1800, "rollover_enabled": True}
+        ).maximum_s
+        == 1800
+    )
+    with pytest.raises(ValueError):
+        RuntimeSettings.model_validate(settings() | {"maximum_s": 1801, "rollover_enabled": True})
+
+
 def test_native_recovery_brings_existing_task_via_exported_launcher_not_run_activity(
     tmp_path, monkeypatch
 ):
@@ -55,7 +66,7 @@ def test_native_recovery_brings_existing_task_via_exported_launcher_not_run_acti
         json.dumps(settings() | {"resume_evidence": ".local/pending"})
     )
     runtime = LiveRuntime(tmp_path, Path(".local/profile.json"), Path(".local/run.json"))
-    monkeypatch.setattr(runtime, "_resume_ticket", lambda _: None)
+    monkeypatch.setattr(runtime, "_resume_ticket", lambda _: (directory, None, None, None, None))
 
     class Bridge:
         def __init__(self):

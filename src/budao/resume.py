@@ -70,7 +70,7 @@ class ResumeWitness(StrictModel):
             saved.run_control_state != "paused"
             or saved.completed_checkpoints != 0
             or len(saved.checkpoint_cards) != 1
-            or saved.checkpoint_cards[0].state != "pending"
+            or saved.checkpoint_cards[0].state not in {"pending", "assigned"}
             or any(
                 f.inspection.run_control_state != "paused"
                 or f.inspection.elapsed_s != saved.elapsed_s

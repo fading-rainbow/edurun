@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .android import AndroidBridge
-from .models import Observation
+from .models import GeoPoint, Observation
 from .profiles import (
     CheckpointCatalog,
     RunProfile,
@@ -27,6 +27,16 @@ class NamedCardObserver:
         for name in confirmed_names:
             catalog.resolve(name)
         self.catalog, self.confirmed_names = catalog, confirmed_names
+        self.navigation_candidates: dict[str, GeoPoint] = {}
+
+    @property
+    def allowed_names(self):
+        return self.confirmed_names | self.navigation_candidates.keys()
+
+    def navigation_point(self, name):
+        if name in self.navigation_candidates:
+            return self.navigation_candidates[name]
+        return self.catalog.resolve(name).approach
 
     @classmethod
     def from_profile(cls, project_root: Path, profile_file: Path):
@@ -72,17 +82,17 @@ class NamedCardObserver:
         names = []
         try:
             for card in cards[:completed]:
-                if card.state != "completed" or card.name not in self.confirmed_names:
+                if card.state != "completed" or card.name not in self.allowed_names:
                     return unknown
-                self.catalog.resolve(card.name)
+                self.navigation_point(card.name)
                 names.append(card.name)
             point, number, name = None, None, None
             if completed < 3:
                 card = cards[-1]
                 if card.state == "assigned":
-                    if card.distance_m is None or card.name not in self.confirmed_names:
+                    if card.distance_m is None or card.name not in self.allowed_names:
                         return unknown
-                    point = self.catalog.resolve(card.name).approach
+                    point = self.navigation_point(card.name)
                     number, name = card.number, card.name
                 elif card.state != "pending" or card.allocation_remaining_m is None:
                     return unknown

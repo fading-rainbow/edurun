@@ -96,6 +96,38 @@ def test_nonzero_page_not_treated_as_new_session(monkeypatch):
         enter_formal_zero(Bridge(), lambda: True, ui_factory=UI, sleep=lambda _: None)
 
 
+def test_cold_restore_requires_exact_saved_pause_and_never_clicks_real_start(monkeypatch):
+    from test_runtime import frame
+
+    saved = frame(10, control="paused", distance_m=150, elapsed=622).inspection
+    metrics = {
+        k: getattr(saved, k)
+        for k in ("distance_m", "elapsed_s", "completed_checkpoints", "counter_label")
+    }
+    monkeypatch.setattr("budao.portal.parse_run_metrics", lambda _: metrics)
+    monkeypatch.setattr("budao.portal.parse_run_control_state", lambda _: "paused")
+    monkeypatch.setattr("budao.portal.parse_checkpoint_cards", lambda _: saved.checkpoint_cards)
+    b = Bridge()
+    baseline = []
+    assert (
+        enter_formal_zero(
+            b,
+            lambda: True,
+            ui_factory=UI,
+            sleep=lambda _: None,
+            pause_expected=saved,
+            on_grade=lambda value, tree: baseline.append(value),
+        )
+        == 1
+    )
+    assert b.clicks == ["tv_run", "tv_enterRun", "tv_cancle"] and baseline == [1]
+    metrics["elapsed_s"] = 0
+    with pytest.raises(ValueError, match="暂停凭据不一致"):
+        enter_formal_zero(
+            Bridge(), lambda: True, ui_factory=UI, sleep=lambda _: None, pause_expected=saved
+        )
+
+
 def test_slow_grade_or_interstitial_waits_without_second_tab_or_start(monkeypatch):
     monkeypatch.setattr(
         "budao.portal.parse_run_metrics",

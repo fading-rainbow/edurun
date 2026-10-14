@@ -36,6 +36,8 @@ class SessionRunner:
         refresh_gps: Callable | None = None,
         wait_for_human: bool = False,
         resume_start: Callable | None = None,
+        resolve_checkpoint: Callable | None = None,
+        rollover_enabled: bool = False,
     ):
         if (
             not isinstance(connector, StartConnector)
@@ -49,7 +51,11 @@ class SessionRunner:
             or motion.bounded_stream is not True
             or type(maximum_s) not in (int, float)
             or not math.isfinite(maximum_s)
-            or not 0 < maximum_s <= min(900, clip.duration_s * motion.replay_passes)
+            or type(rollover_enabled) is not bool
+            or (rollover_enabled and clip.duration_s * motion.replay_passes < 900)
+            or not 0
+            < maximum_s
+            <= (1800 if rollover_enabled else min(900, clip.duration_s * motion.replay_passes))
             or dispatcher.started
             or dispatcher.worker.thread is not None
             or motion.started
@@ -72,6 +78,10 @@ class SessionRunner:
         if resume_start is not None and not callable(resume_start):
             raise ValueError("续跑必须为本机绑定的专用回调")
         self.resume_start = resume_start
+        if resolve_checkpoint is not None and not callable(resolve_checkpoint):
+            raise ValueError("地图恢复必须是本机绑定的回调")
+        self.resolve_checkpoint = resolve_checkpoint
+        self.rollover_enabled = rollover_enabled
         self.used = False
         self.started = False
         self.lock = threading.Lock()
@@ -81,6 +91,9 @@ class SessionRunner:
         c = self.dispatcher.controller
         cards = view.checkpoint_cards
         names = tuple(card.name for card in cards if card.state == "completed")
+        allowed = getattr(
+            self.dispatcher.observer, "allowed_names", self.dispatcher.observer.confirmed_names
+        )
         if (
             view.state != "metrics"
             or view.run_control_state != "running"
@@ -96,11 +109,7 @@ class SessionRunner:
                 issue != "start_controls_and_current_record_identity_unverified"
                 for issue in view.issues
             )
-            or any(
-                card.state != "pending"
-                and card.name not in self.dispatcher.observer.confirmed_names
-                for card in cards
-            )
+            or any(card.state != "pending" and card.name not in allowed for card in cards)
         ):
             return False
         if view.completed_checkpoints == c.completed + 1:
@@ -189,7 +198,18 @@ class SessionRunner:
                 raise ValueError("开始后没有本次允许观察")
             self.motion.start(initial.android_observed_ns)
             deadline = self.clock() + self.maximum_s
+            window_deadline = self.clock() + 600
             while not cancel.is_set() and self.clock() < deadline:
+                if self.rollover_enabled and self.clock() >= window_deadline:
+                    report.update(state="recovering", message="有界输入片段换窗；暂停并重新核对")
+                    publish(dict(report))
+                    waited = self._human_wait(cancel, authorize, pause_record=True)
+                    if waited is None:
+                        report.update(state="paused", message="换窗后运行页未确认；保留记录")
+                        break
+                    deadline += waited
+                    window_deadline = self.clock() + 600
+                    continue
                 try:
                     cap = self.connector.capture(
                         motion_request=self.motion.request,
@@ -209,6 +229,7 @@ class SessionRunner:
                         report.update(state="paused", message="广告后运行页未确认；保留记录")
                         break
                     deadline += waited
+                    window_deadline = self.clock() + 600
                     continue
                 view = cap.frame.inspection
                 if "human_face_verification_required" in view.issues:
@@ -220,8 +241,32 @@ class SessionRunner:
                         waited = self._human_wait(cancel, authorize)
                         if waited is not None:
                             deadline += waited
+                            window_deadline = self.clock() + 600
                             continue
                     break
+                unknown = [
+                    card
+                    for card in view.checkpoint_cards
+                    if card.state == "assigned"
+                    and card.name
+                    not in getattr(
+                        self.dispatcher.observer,
+                        "allowed_names",
+                        self.dispatcher.observer.confirmed_names,
+                    )
+                ]
+                if unknown and self.resolve_checkpoint is not None:
+                    report.update(state="recovering", message="未知打卡点；暂停输入后标定地图")
+                    publish(dict(report))
+                    waited = self._human_wait(
+                        cancel, authorize, map_recovery=self.resolve_checkpoint
+                    )
+                    if waited is None:
+                        report.update(state="paused", message="地图恢复未通过；保留记录")
+                        break
+                    deadline += waited
+                    window_deadline = self.clock() + 600
+                    continue
                 sender = cap.motion_snapshot
                 if (
                     not sender
@@ -326,7 +371,7 @@ class SessionRunner:
         publish(dict(report))
         return report
 
-    def _human_wait(self, cancel, authorize):
+    def _human_wait(self, cancel, authorize, *, map_recovery=None, pause_record=False):
         """等待用户正常验证，不点击验证、读取摄像头或提供照片。只续接自己的新会话。"""
         began, bridge = self.clock(), self.motion.bridge
         self.dispatcher.worker.pause("本人验证；不移动")
@@ -340,6 +385,18 @@ class SessionRunner:
         bridge.run("shell", "dumpsys", "sensorservice", "enable")
         if sensor_mode(bridge.run("shell", "dumpsys", "sensorservice")) != NORMAL:
             raise ValueError("本人等待时正常模式未确认")
+        if map_recovery is not None or pause_record:
+            cap = self.connector.capture()
+            if cap.frame.inspection.run_control_state == "running":
+                button = self.connector.ui.device(
+                    resourceId=TARGET + ":id/tv_start_pause_continue_run"
+                )
+                if button.count != 1 or not 0 <= self.clock() - cap.frame.sampled_at < 2:
+                    raise ValueError("地图恢复前暂停控件或时效未知")
+                bridge.check_device()
+                button.long_click(duration=2)
+            if map_recovery is not None:
+                map_recovery(authorize)
         resumed = False
         while not cancel.is_set() and authorize() is True and self.clock() - began < 600:
             focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
