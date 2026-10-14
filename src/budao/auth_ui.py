@@ -19,8 +19,24 @@ LAUNCHER = "com.edurun.launcher"
 def target_task_tops(tasks: str) -> list[str]:
     if not tasks.startswith("ACTIVITY MANAGER ACTIVITIES") or len(tasks) > 2 * 1024 * 1024:
         raise ValueError("实际任务栈未知")
-    tops = re.findall(r"Hist\s+#0:.*?\bcom\.lptiyu\.tanke/([A-Za-z0-9_.$]+)", tasks)
-    expanded = [TARGET + t if t.startswith(".") else t for t in tops]
+    # Hist #0 is the ROOT, not the top. MapRun may be Hist #1 above
+    # MainActivity #0. Group by task and choose the highest history ordinal.
+    records = re.findall(
+        r"^\s*\*?\s*Hist\s+#([0-9]+):\s*ActivityRecord\{[^{}\r\n]*?\b"
+        r"([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)\s+t([0-9]+)\b[^{}\r\n]*\}",
+        tasks,
+        re.M,
+    )
+    target_tasks = {task for _, package, _, task in records if package == TARGET}
+    expanded = []
+    for task in sorted(target_tasks, key=int):
+        history = [r for r in records if r[3] == task]
+        top_number = max(int(r[0]) for r in history)
+        tops = [r for r in history if int(r[0]) == top_number]
+        if len(tops) != 1 or tops[0][1] != TARGET:
+            raise ValueError("目标任务顶部重复或被其他认证页面覆盖，不导航")
+        activity = tops[0][2]
+        expanded.append(TARGET + activity if activity.startswith(".") else activity)
     if TARGET in tasks and not expanded:
         raise ValueError("目标任务存在但顶部未解析；不导航覆盖")
     return expanded

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import time
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from .auth_ui import LAUNCHER, prepare_current_login, target_task_tops
 from .card_observer import NamedCardObserver
 from .driver import DriveEngine
 from .finish_connector import FinishConnector
@@ -22,12 +24,15 @@ from .mumu_driver import MuMuPositionWorker
 from .portal import enter_formal_zero
 from .profiles import RunProfile, _load, preflight_profile, private_file
 from .raw_motion import match_recorded_snapshot, prepare_recorded_probe
+from .resume import resume_once
 from .routes import RoutePlanner
-from .runtime import RuntimeDispatcher
+from .runtime import CapturedRunFrame, RuntimeDispatcher, StartWitness
 from .sensor_probe import NORMAL, sensor_mode
 from .session_runner import SessionRunner
 from .start_button import StartButtonTemplate
 from .start_connector import StartConnector
+from .target import RUN_ACTIVITY, TARGET
+from .ui import focused_component
 
 
 class RuntimeSettings(StrictModel):
@@ -40,6 +45,7 @@ class RuntimeSettings(StrictModel):
     normal_save_authorized: bool = False
     run_zone_label: str | None = Field(default=None, min_length=1, max_length=128)
     vision_config: Path | None = None
+    resume_evidence: Path | None = None
 
 
 def verify_motion_evidence(root: Path, path: Path, clip) -> bool:
@@ -81,6 +87,29 @@ class JournalConnector(StartConnector):
         (self.evidence / "current.xml").write_text(value.hierarchy, "utf-8")
         with (self.evidence / "frames.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(value.frame.model_dump_json() + "\n")
+        if value.motion_snapshot is not None:
+            probe = value.motion_snapshot.get("raw_motion_probe", {})
+            compact = {
+                "frame_id": value.frame.frame_id,
+                "sampled_at": value.frame.sampled_at,
+                "android_observed_ns": value.android_observed_ns,
+                "gps_reception": value.motion_snapshot.get("gps_reception"),
+                "motion": {
+                    k: probe.get(k)
+                    for k in (
+                        "request_id",
+                        "state",
+                        "clip_sha256",
+                        "sent_rows",
+                        "maximum_gap_ns",
+                        "lease_deadline_ns",
+                        "last_observation_ns",
+                        "last_send_ns",
+                    )
+                },
+            }
+            with (self.evidence / "input-observations.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(compact) + "\n")
         if value.screenshot is not None:
             value.screenshot.save(self.evidence / "current.png")
         return value
@@ -102,6 +131,22 @@ class JournalRunner(SessionRunner):
             (self.connector.evidence / "status.json").write_text(
                 json.dumps(stored, ensure_ascii=False, indent=2), "utf-8"
             )
+            w = self.dispatcher.worker
+            state = w.state  # immutable published snapshot, do not wait for vendor IO
+            with (self.connector.evidence / "drive-observations.jsonl").open(
+                "a", encoding="utf-8"
+            ) as stream:
+                stream.write(
+                    json.dumps(
+                        {
+                            "sampled_at": self.clock(),
+                            "state": asdict(state) | {"position": state.position.model_dump()},
+                            "commands_acknowledged": w.commands_acknowledged,
+                            "output_state_unknown": w.output_state_unknown,
+                        }
+                    )
+                    + "\n"
+                )
             if report["state"] == "finish_ready" and self.save_authorized:
                 publish(report | {"state": "finishing"})
             else:
@@ -144,6 +189,86 @@ class LiveRuntime:
     def __init__(self, root: Path, profile: Path, settings: Path):
         self.root, self.profile = root.resolve(), profile
         self.settings = _load(private_file(self.root, settings), RuntimeSettings)
+
+    def _resume_ticket(self, bridge):
+        directory = private_file(self.root, self.settings.resume_evidence, must_exist=False)
+        if not directory.is_dir() or any(
+            (directory / name).exists()
+            for name in (
+                "save-action-attempted.json",
+                "resume-action-attempted.json",
+                "recovery-claimed.json",
+            )
+        ):
+            raise ValueError("原生暂停记录不存在或已消费，不自动接管")
+        status = json.loads((directory / "status.json").read_text("utf-8-sig"))
+        witness_file = directory / "start-witness.json"
+        witness = StartWitness.model_validate_json(witness_file.read_text("utf-8-sig"))
+        saved = CapturedRunFrame.model_validate_json(
+            (directory / "frames.jsonl").read_text("utf-8-sig").splitlines()[-1]
+        )
+        if (
+            status.get("state") != "paused"
+            or status.get("mode_restored_normal") is not True
+            or status.get("app_pause_confirmed") is not True
+            or status.get("records_submitted") != 0
+            or witness.serial != bridge.serial
+            or saved.inspection.run_control_state != "paused"
+            or saved.inspection.completed_checkpoints != 0
+            or saved.inspection.elapsed_s is None
+            or not 0 < saved.inspection.elapsed_s < 1800
+            or status.get("distance_m") != saved.inspection.distance_m
+            or saved.sampled_at <= witness.second_running.sampled_at
+            or not 0 <= time.monotonic() - saved.sampled_at < 86400
+        ):
+            raise ValueError("只续接本助手已清理并确认暂停的零打卡记录")
+        meta_path = directory / "session-meta.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text("utf-8-sig"))
+            if meta["original_request"] != witness.request_id:
+                raise ValueError("开始元数据与新会话证据不一致")
+            stamp = datetime.fromisoformat(meta["start_stamp"])
+            grade = meta["grade_before"]
+        else:
+            # Compatibility for the already-started pre-journal session. Its
+            # write-time clock is only a recovery estimate, never a new start
+            # or an invented pre-start grade baseline.
+            android_s = int(bridge.run("shell", "date", "+%s"))
+            if abs(time.time() - android_s) > 3 or bridge.run(
+                "shell", "date", "+%z"
+            ).strip() != datetime.now().astimezone().strftime("%z"):
+                raise ValueError("旧证据缺少开始日期，设备与主机时钟未对齐")
+            stamp = datetime.fromtimestamp(
+                witness_file.stat().st_mtime - witness.second_running.inspection.elapsed_s
+            )
+            grade = None
+        if bridge.run("shell", "date", "+%F").strip() != stamp.strftime("%Y-%m-%d"):
+            raise ValueError("暂停会话已跨日")
+        return directory, witness, saved, stamp, grade
+
+    def prepare_login(self, bridge):
+        if self.settings.resume_evidence is None:
+            return prepare_current_login(bridge)
+        self._resume_ticket(bridge)
+        focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
+        if focus == (LAUNCHER, LAUNCHER + ".LauncherActivity"):
+            tops = target_task_tops(bridge.run("shell", "dumpsys", "activity", "activities"))
+            if tops != [RUN_ACTIVITY]:
+                raise ValueError("助手背后的任务并非唯一的本次暂停运行页")
+            bridge.run(
+                "shell",
+                "am",
+                "start",
+                "--activity-reorder-to-front",
+                "-n",
+                TARGET + "/" + RUN_ACTIVITY,
+            )
+        if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != (
+            TARGET,
+            RUN_ACTIVITY,
+        ):
+            raise ValueError("当前不是已绑定暂停记录，不读取认证页")
+        return {"state": "logged_in_ui", "server_auth_proven": False}
 
     def preflight(self, route: dict, bridge: MuMuBridge):
         if not isinstance(bridge, MuMuBridge):
@@ -194,6 +319,7 @@ class LiveRuntime:
             raise ValueError("没有实际同设备当前位置")
         initial = GeoPoint(lat=float(match[1]), lon=float(match[2]))
         planner.plan(initial, config.baseline[0])
+        ticket = self._resume_ticket(bridge) if self.settings.resume_evidence is not None else None
         evidence = self.root / ".local/runs" / ("native-" + secrets.token_hex(8))
         evidence.mkdir()
         (self.root / ".local/setup/native-latest.json").write_text(
@@ -229,6 +355,42 @@ class LiveRuntime:
         )
         runner.save_authorized = self.settings.normal_save_authorized
 
+        if ticket is not None:
+            directory, original, saved, stamp, grade = ticket
+            runner.start_stamp, runner.grade_before = stamp, grade
+            runner.original_request = original.request_id
+            (evidence / "start-witness.json").write_text(
+                original.model_dump_json(indent=2), "utf-8"
+            )
+            (evidence / "session-meta.json").write_text(
+                json.dumps(
+                    {
+                        "start_stamp": stamp.isoformat(),
+                        "grade_before": grade,
+                        "original_request": original.request_id,
+                    }
+                ),
+                "utf-8",
+            )
+            (evidence / "recovery-parent.json").write_text(
+                json.dumps(
+                    {
+                        "parent": str(directory),
+                        "grade_baseline_available": grade is not None,
+                        "new_start_attempted": False,
+                    }
+                ),
+                "utf-8",
+            )
+
+            def continue_start(_new_motion_request, authorize):
+                with (directory / "recovery-claimed.json").open("x", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"child": str(evidence), "retry_allowed": False}))
+                return resume_once(connector, original, saved, stamp, authorize)
+
+            runner.resume_start = continue_start
+            return runner
+
         def prepare_start(authorize):
             scene = None
             if self.settings.vision_config is not None:
@@ -246,6 +408,16 @@ class LiveRuntime:
                     authorize,
                     expected_zone=self.settings.run_zone_label,
                     scene_helper=scene,
+                )
+                (evidence / "session-meta.json").write_text(
+                    json.dumps(
+                        {
+                            "start_stamp": runner.start_stamp.isoformat(),
+                            "grade_before": runner.grade_before,
+                            "original_request": runner.original_request,
+                        }
+                    ),
+                    "utf-8",
                 )
             finally:
                 if scene is not None:

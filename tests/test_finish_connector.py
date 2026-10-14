@@ -57,5 +57,6 @@ def test_saved_is_not_valid_until_matching_record_and_increment():
         FinishEvidence("a" * 32, True, 1, 1, True),
         FinishEvidence("a" * 32, True, 1, None, True),
         FinishEvidence("a" * 32, True, 1, 2, False),
+        FinishEvidence("a" * 32, True, None, 2, True),
     ):
         assert not proof.accepted

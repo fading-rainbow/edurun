@@ -35,6 +35,7 @@ class SessionRunner:
         prepare_start: Callable | None = None,
         refresh_gps: Callable | None = None,
         wait_for_human: bool = False,
+        resume_start: Callable | None = None,
     ):
         if (
             not isinstance(connector, StartConnector)
@@ -68,6 +69,9 @@ class SessionRunner:
         if type(wait_for_human) is not bool:
             raise ValueError("本人等待选项必须明确")
         self.wait_for_human, self.original_request = wait_for_human, motion.request
+        if resume_start is not None and not callable(resume_start):
+            raise ValueError("续跑必须为本机绑定的专用回调")
+        self.resume_start = resume_start
         self.used = False
         self.started = False
         self.lock = threading.Lock()
@@ -140,7 +144,7 @@ class SessionRunner:
             self.motion.prepare(self.clip)
             self.motion.preload(self.clip)
             gps_deadline = self.clock() + 10
-            while not cancel.is_set() and self.clock() < gps_deadline:
+            while self.resume_start is None and not cancel.is_set() and self.clock() < gps_deadline:
                 if self.refresh_gps is not None:
                     self.refresh_gps(lambda: not cancel.is_set() and authorize() is True)
                 cap = self.connector.capture(motion_request=self.motion.request)
@@ -153,8 +157,12 @@ class SessionRunner:
                     break
                 self.sleep(0.1)
             else:
-                raise ValueError("开始前未接收当前同位置GPS；不瞬移、不点击")
-            witness = self.connector.begin_once(
+                if self.resume_start is not None:
+                    pass  # Current received position is checked by the recovery factory.
+                else:
+                    raise ValueError("开始前未接收当前同位置GPS；不瞬移、不点击")
+            start = self.resume_start or self.connector.begin_once
+            witness = start(
                 self.motion.request, lambda: not cancel.is_set() and authorize() is True
             )
             report["run_started"] = True
@@ -163,7 +171,10 @@ class SessionRunner:
             publish(dict(report))
             if cancel.is_set():
                 raise ValueError("新开始后收到停止请求；不打开输入模式")
-            self.dispatcher.start(witness)
+            if self.resume_start is None:
+                self.dispatcher.start(witness)
+            else:
+                self.dispatcher.resume(witness)
             mode_changed = True  # 超时也可能已经切换，清理时读取实际模式，不猜ACK结果。
             self.motion.bridge.run(
                 "shell", "dumpsys", "sensorservice", "data_injection", DIAGNOSTIC_PACKAGE

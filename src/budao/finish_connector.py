@@ -57,7 +57,7 @@ def record_matches(tree, stamp: datetime, distance_m: float, elapsed_s: int):
 class FinishEvidence:
     request_id: str
     record_matches_new_start: bool
-    grade_before: int
+    grade_before: int | None
     grade_after: int | None
     save_action_attempted: bool
 
@@ -77,8 +77,12 @@ class FinishConnector:
     def __init__(self, connector: StartConnector):
         self.connector, self.used = connector, False
 
-    def finish_once(self, *, stamp: datetime, grade_before: int, authorize, expected):
-        if self.used or authorize() is not True or type(grade_before) is not int:
+    def finish_once(self, *, stamp: datetime, grade_before: int | None, authorize, expected):
+        if (
+            self.used
+            or authorize() is not True
+            or (grade_before is not None and type(grade_before) is not int)
+        ):
             raise ValueError("正常结束需要新任务、开始前成绩基线及明确许可")
         self.used = True
         c, b = self.connector, self.connector.bridge
@@ -166,7 +170,7 @@ class FinishConnector:
                 value = field(tree, "tv_run_data")
                 if value and re.fullmatch(r"[0-9]{1,4}", value):
                     count = int(value)
-                    if count == grade_before + 1:
+                    if grade_before is None or count == grade_before + 1:
                         if grade_after == count:
                             (c.evidence / "grade-after.xml").write_text(tree, "utf-8")
                             break

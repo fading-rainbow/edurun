@@ -307,7 +307,10 @@ def serve_launcher(
 
         runtime = LiveRuntime(root, profile, runtime_file)
     coordinator = PreparationCoordinator(
-        root, profile, execution_preflight=runtime.preflight if runtime else None
+        root,
+        profile,
+        login_preparer=runtime.prepare_login if runtime else prepare_current_login,
+        execution_preflight=runtime.preflight if runtime else None,
     )
     with LauncherServer(
         coordinator, token, port, runner_factory=runtime.build if runtime else None

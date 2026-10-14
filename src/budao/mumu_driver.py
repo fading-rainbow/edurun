@@ -41,6 +41,7 @@ class MuMuPositionWorker:
         self.output_state_unknown = False
         self.pending_lock = threading.Lock()
         self.pending_renewal: float | None = None
+        self.pending_continuous = False
         self.last_async_observed_at = -math.inf
         self.async_allowed = False
 
@@ -117,6 +118,14 @@ class MuMuPositionWorker:
                 self.revoked.set()
                 self.async_allowed = False
                 raise ValueError("需要新鲜、递增且已有路径的观察，拒绝异步续约")
+            # The mailbox is applied only on the next output tick. A renewal
+            # delivered BEFORE the existing deadline is a continuous lease,
+            # even when that tick happens after the old deadline. Preserve
+            # this handoff through latest-only coalescing; never bridge a gap.
+            deadline = self.engine.lease_until
+            if self.pending_renewal is not None and self.pending_continuous:
+                deadline = max(deadline, self.pending_renewal + 2)
+            self.pending_continuous = self.engine.enabled and now < deadline
             self.pending_renewal = observed_at
             self.last_async_observed_at = observed_at
             self.revoked.clear()
@@ -124,6 +133,7 @@ class MuMuPositionWorker:
     def _clear_pending(self, *, disallow=False):
         with self.pending_lock:
             self.pending_renewal = None
+            self.pending_continuous = False
             if disallow:
                 self.async_allowed = False
                 self.revoked.set()
@@ -131,7 +141,9 @@ class MuMuPositionWorker:
     def _apply_pending(self, now: float):
         with self.pending_lock:
             observed = self.pending_renewal
+            continuous = self.pending_continuous
             self.pending_renewal = None
+            self.pending_continuous = False
             if (
                 observed is None
                 or observed <= self.last_observed_at
@@ -146,7 +158,11 @@ class MuMuPositionWorker:
                 self.async_allowed = False
                 return
             # 与撤销使用同一小锁；暂停不能被已经取出的旧邮箱观察重新解除。
+            last_tick = self.engine.player.last_time if self.engine.player else None
+            preserve_clock = continuous and self.engine.enabled
             self.engine.renew(now, lease_s=2 - age)
+            if preserve_clock and self.engine.player is not None:
+                self.engine.player.last_time = last_tick
             self.last_observed_at = observed
 
     def pause(self, reason: str = "观察不明/广告/验证/用户暂停") -> None:
@@ -191,10 +207,17 @@ class MuMuPositionWorker:
 
             def authorize():
                 current = self.clock()
+                # A new validated frame may have arrived while the device
+                # guard held the IO lock. Apply only a gap-free mailbox lease;
+                # otherwise the old tick must still expire without output.
+                with self.pending_lock:
+                    continuous = self.pending_continuous
+                if continuous and not self.revoked.is_set():
+                    self._apply_pending(current)
                 return (
                     math.isfinite(current)
                     and 0 <= current - now <= 1.5
-                    and current < lease_until
+                    and current < max(lease_until, self.engine.lease_until)
                     and not self.stop_event.is_set()
                     and not self.revoked.is_set()
                 )

@@ -224,6 +224,30 @@ class RuntimeDispatcher:
             self.worker.pause("路网/驱动/观察许可未通过，等待重新核对")
             return Decision(action="pause", reason="路线不连通或驱动/新观察未就绪")
 
+    def resume(self, proof) -> None:
+        from .resume import ResumeWitness
+
+        if not isinstance(proof, ResumeWitness):
+            raise ValueError("续跑缺少原生新会话及本次继续动作证据")
+        proof = ResumeWitness.model_validate(proof.model_dump())
+        if (
+            self.started
+            or self.worker.thread is not None
+            or proof.original.serial != self.worker.bridge.serial
+            or not 0 <= self.clock() - proof.second_running.sampled_at < 2
+        ):
+            raise ValueError("续跑证据过期或线程/设备不匹配")
+        self.worker.start()
+        if not 0 <= self.clock() - proof.second_running.sampled_at < 2:
+            self.worker.stop()
+            raise ValueError("续跑线程初始化后观察已过期")
+        current = proof.second_running
+        self.controller.last_time = current.sampled_at
+        self.controller.last_elapsed_s = current.inspection.elapsed_s
+        self.controller.distance_m = current.inspection.distance_m
+        self.controller.seen_named_frames.update(f.frame_id for f in proof.frames)
+        self.started = True
+
     def stop(self):
         self.worker.stop()
         self.started = False

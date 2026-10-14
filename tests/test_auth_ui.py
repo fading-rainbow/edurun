@@ -206,6 +206,33 @@ def test_launcher_login_navigation_never_overrides_background_run_or_protected_t
         assert not any(call[:3] == ("shell", "am", "start") for call in device.calls)
 
 
+def test_real_root_main_below_map_run_is_not_safe_home():
+    from budao.auth_ui import target_task_tops
+
+    tasks = (
+        "ACTIVITY MANAGER ACTIVITIES\n"
+        " * Hist  #1: ActivityRecord{abc u0 com.lptiyu.tanke/"
+        ".activities.school_run.MapRunActivity t60}\n"
+        " * Hist  #0: ActivityRecord{def u0 com.lptiyu.tanke/.activities.main.MainActivity t60}\n"
+    )
+    assert target_task_tops(tasks) == [TARGET + ".activities.school_run.MapRunActivity"]
+    device = Device((LAUNCHER, LAUNCHER + ".LauncherActivity"), tasks=tasks)
+    assert prepare_current_login(device)["state"] == "existing_target_session"
+    assert not any(call[:3] == ("shell", "am", "start") for call in device.calls)
+
+
+def test_task_top_in_another_package_is_protected_not_underlying_main():
+    from budao.auth_ui import target_task_tops
+
+    tasks = (
+        "ACTIVITY MANAGER ACTIVITIES\n"
+        "Hist #1: ActivityRecord{a u0 com.qq/AuthActivity t5}\n"
+        "Hist #0: ActivityRecord{b u0 com.lptiyu.tanke/.activities.main.MainActivity t5}\n"
+    )
+    with pytest.raises(ValueError):
+        target_task_tops(tasks)
+
+
 def test_prepared_login_returns_to_launcher_without_starting_run_or_auth_copy():
     device = Device((LAUNCHER, LAUNCHER + ".LauncherActivity"))
 

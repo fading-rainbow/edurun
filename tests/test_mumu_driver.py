@@ -331,3 +331,62 @@ def test_sync_cannot_replay_observation_already_delivered_async(setup):
     worker.renew_async(1)
     with pytest.raises(ValueError):
         worker.renew(1)
+
+
+def test_gap_free_mailbox_handoff_preserves_clock_at_late_tick(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker._tick()
+    clock[0] = 1
+    worker._tick()
+    clock[0] = 1.7  # delivered before the old deadline of 2
+    worker.renew_async(1.4)
+    clock[0] = 2.1  # consumed after old deadline, but before renewed deadline
+    worker._tick()
+    assert worker.engine.total == pytest.approx(2.5 * 2.1)
+    assert worker.commands_acknowledged == 3
+    assert worker.engine.lease_until == pytest.approx(3.4)
+
+
+def test_mailbox_received_after_gap_does_not_catch_up(setup):
+    worker, _, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker._tick()
+    clock[0] = 1
+    worker._tick()
+    clock[0] = 2.1  # real gap, even if the UI sampled before the deadline
+    worker.renew_async(1.9)
+    worker._tick()
+    assert worker.engine.total == pytest.approx(2.5)
+
+
+def test_latest_only_mailbox_keeps_continuous_delivery_chain(setup):
+    worker, _, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker._tick()
+    clock[0] = 1.7
+    worker.renew_async(1.4)
+    clock[0] = 2.2
+    worker.renew_async(1.9)
+    clock[0] = 2.5
+    worker._tick()
+    assert worker.engine.total == pytest.approx(2.5 * 2.5)
+    assert worker.engine.lease_until == pytest.approx(3.9)
+
+
+def test_continuous_delivery_during_guard_extends_permission_without_io_wait(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    worker._tick()
+    clock[0] = 1.7
+
+    def deliver():
+        clock[0] = 1.9
+        worker.renew_async(1.8)
+        clock[0] = 2.1
+
+    bridge.before_authorize = deliver
+    worker._tick()
+    assert worker.commands_acknowledged == 2
+    assert worker.engine.total == pytest.approx(2.5 * 1.7)
+    assert worker.engine.lease_until == pytest.approx(3.8)
