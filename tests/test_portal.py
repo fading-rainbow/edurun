@@ -49,7 +49,10 @@ class UI:
         return SimpleNamespace(count=count, click=click, get_text=lambda: "1")
 
     def dump_hierarchy(self):
-        return "<hierarchy/>"
+        return (
+            f'<hierarchy><node package="{TARGET}" visible-to-user="true" '
+            f'resource-id="{TARGET}:id/tv_run_data" text="1"/></hierarchy>'
+        )
 
 
 def test_single_portal_clicks_rules_then_returns_zero_not_start(monkeypatch):
@@ -114,6 +117,13 @@ def test_slow_grade_or_interstitial_waits_without_second_tab_or_start(monkeypatc
                 if self.grade_reads <= 3:
                     control.count = 0
             return control
+
+        def dump_hierarchy(self):
+            if self.bridge.phase == "main":
+                self.grade_reads += 1
+                if self.grade_reads <= 3:
+                    return "<hierarchy/>"
+            return super().dump_hierarchy()
 
     bridge = Bridge()
     assert enter_formal_zero(bridge, lambda: True, ui_factory=DelayedUI, sleep=lambda _: None) == 1

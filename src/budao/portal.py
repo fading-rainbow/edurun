@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 
 from .auth_ui import LAUNCHER, MAIN, SPLASH, target_task_tops
+from .finish_connector import field
 from .mumu import MuMuBridge
 from .target import RUN_ACTIVITY, TARGET, parse_run_metrics
 from .ui import KNOWN_AD_COMPONENT, AppUI, dismiss_known_ad, focused_component
@@ -98,14 +99,12 @@ def enter_formal_zero(
                 click("tv_run", "乐跑", current)
                 run_selected = True
             elif not entered:
-                grade = ui.device(resourceId=TARGET + ":id/tv_run_data")
-                if grade.count > 1:
-                    raise ValueError("当前已完成次数未确认；不开始")
+                grade = field(tree, "tv_run_data")
                 # 点击标签后，成绩数据/插屏广告异步到达；缺字段只等待，不重复点击标签。
-                if grade.count == 0 or not re.fullmatch(r"[0-9]{1,4}", grade.get_text()):
+                if grade is None or not re.fullmatch(r"[0-9]{1,4}", grade):
                     sleep(0.2)
                     continue
-                grade_frames.append(int(grade.get_text()))
+                grade_frames.append(int(grade))
                 if len(grade_frames) >= 2:
                     if grade_frames[-1] != grade_frames[-2]:
                         raise ValueError("开始前成绩发生变化；不开始")
