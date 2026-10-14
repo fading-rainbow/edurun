@@ -12,7 +12,7 @@ from .auth_ui import MAIN
 from .sensor_probe import NORMAL, sensor_mode
 from .start_connector import StartConnector
 from .target import RUN_ACTIVITY, TARGET
-from .ui import focused_component
+from .ui import KNOWN_AD_COMPONENT, dismiss_known_ad, focused_component
 
 DETAIL = TARGET + ".activities.school_run_record_detail.RunRecordDetailActivity"
 
@@ -135,6 +135,10 @@ class FinishConnector:
         matched, grade_after, deadline = False, None, time.monotonic() + 60
         while time.monotonic() < deadline:
             focus = focused_component(b.run("shell", "dumpsys", "window", "displays"))
+            if focus == KNOWN_AD_COMPONENT:
+                dismiss_known_ad(b, c.ui)
+                time.sleep(0.2)
+                continue
             if focus not in {(TARGET, DETAIL), (TARGET, MAIN), (TARGET, RUN_ACTIVITY)}:
                 break  # 不读取密码、摄像头或其它应用。
             tree = c.ui.device.dump_hierarchy()

@@ -185,7 +185,8 @@ public final class LauncherActivity extends Activity {
     private static boolean active(String state) {
         return "checking".equals(state) || "preparing".equals(state)
             || "starting".equals(state) || "running".equals(state) || "stopping".equals(state)
-            || "verification_required".equals(state) || "finishing".equals(state);
+            || "verification_required".equals(state) || "finishing".equals(state)
+            || "recovering".equals(state);
     }
 
     private String pairedToken() throws Exception {

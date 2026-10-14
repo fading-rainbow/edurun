@@ -16,7 +16,7 @@ from .runtime import RuntimeDispatcher
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
 from .start_connector import StartConnector
 from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, TargetInspection
-from .ui import focused_component
+from .ui import KNOWN_AD_COMPONENT, dismiss_known_ad, focused_component
 
 
 class SessionRunner:
@@ -179,11 +179,26 @@ class SessionRunner:
             self.motion.start(initial.android_observed_ns)
             deadline = self.clock() + self.maximum_s
             while not cancel.is_set() and self.clock() < deadline:
-                cap = self.connector.capture(
-                    motion_request=self.motion.request,
-                    renew_motion=self.motion,
-                    authorize_motion=self._eligible_motion,
-                )
+                try:
+                    cap = self.connector.capture(
+                        motion_request=self.motion.request,
+                        renew_motion=self.motion,
+                        authorize_motion=self._eligible_motion,
+                    )
+                except ValueError:
+                    focus = focused_component(
+                        self.motion.bridge.run("shell", "dumpsys", "window", "displays")
+                    )
+                    if focus != KNOWN_AD_COMPONENT:
+                        raise
+                    report.update(state="recovering", message="已知广告出现；停止输入并核对恢复")
+                    publish(dict(report))
+                    waited = self._human_wait(cancel, authorize)
+                    if waited is None:
+                        report.update(state="paused", message="广告后运行页未确认；保留记录")
+                        break
+                    deadline += waited
+                    continue
                 view = cap.frame.inspection
                 if "human_face_verification_required" in view.issues:
                     report.update(
@@ -317,6 +332,10 @@ class SessionRunner:
         resumed = False
         while not cancel.is_set() and authorize() is True and self.clock() - began < 600:
             focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
+            if focus == KNOWN_AD_COMPONENT:
+                dismiss_known_ad(bridge, self.connector.ui, authorize=authorize)
+                self.sleep(0.2)
+                continue
             if focus == (TARGET, RUN_ACTIVITY):
                 cap = self.connector.capture()
                 view = cap.frame.inspection

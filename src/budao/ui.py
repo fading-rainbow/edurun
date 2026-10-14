@@ -9,6 +9,36 @@ from PIL import Image
 
 from .android import AndroidBridge
 
+KNOWN_AD_COMPONENT = ("com.lptiyu.tanke", "com.yfanads.ads.uw.base.inner.YdInterstitialActivity")
+
+
+def dismiss_known_ad(bridge, ui=None, *, authorize=lambda: True):
+    """只退出现场采集的广告SDK页面；不对登录、摄像头或任意其他页面发送返回。"""
+    from .mumu import MuMuBridge
+
+    if not isinstance(bridge, MuMuBridge):
+        raise ValueError("广告恢复仅限独立MuMu")
+    if (
+        focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
+        != KNOWN_AD_COMPONENT
+    ):
+        raise ValueError("不是已采集的广告页，不返回")
+    meta = bridge.run("shell", "dumpsys", "package", KNOWN_AD_COMPONENT[0])
+    if not re.search(r"^\s*versionName=4\.3\.0\s*$", meta, re.M) or not re.search(
+        r"^\s*versionCode=230\b", meta, re.M
+    ):
+        raise ValueError("广告所属版本未核实")
+    ui = ui or AppUI(bridge)
+    bridge.check_device()
+    if (
+        authorize() is not True
+        or focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
+        != KNOWN_AD_COMPONENT
+    ):
+        raise ValueError("广告返回前许可或前台改变")
+    ui.device.press("back")
+    return "known_ad_back_sent_wait_for_observation"
+
 
 def focused_component(window_displays: str) -> tuple[str, str] | None:
     """从真实焦点读包名；不回退到后台任务列表的最后一个Activity。"""

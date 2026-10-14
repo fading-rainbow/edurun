@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from .mumu import MuMuBridge
 from .target import TARGET
-from .ui import AppUI, focused_component
+from .ui import KNOWN_AD_COMPONENT, AppUI, dismiss_known_ad, focused_component
 
 MAIN = TARGET + ".activities.main.MainActivity"
 SPLASH = TARGET + ".activities.splash.SplashActivity"
@@ -145,8 +145,18 @@ def prepare_current_login(
             expanded = target_task_tops(tasks)
         except ValueError:
             return {"state": "unknown_target_tasks", "server_auth_proven": False}
-        if any(t != MAIN for t in expanded):
+        if any(t not in {MAIN, KNOWN_AD_COMPONENT[1]} for t in expanded):
             return {"state": "existing_target_session", "server_auth_proven": False}
+        if KNOWN_AD_COMPONENT[1] in expanded:
+            histories = re.findall(
+                r"Hist\s+#[0-9]+:.*?\bcom\.lptiyu\.tanke/([A-Za-z0-9_.$]+)", tasks
+            )
+            if any(
+                (TARGET + a if a.startswith(".") else a)
+                not in {MAIN, SPLASH, KNOWN_AD_COMPONENT[1]}
+                for a in histories
+            ):
+                return {"state": "existing_target_session", "server_auth_proven": False}
         bridge.run("shell", "am", "start", "-n", TARGET + "/.activities.splash.SplashActivity")
     # 冷启动、广告和安全守卫RPC也消耗时间；界面更新不是点击完成即同步完成。
     # 后台异步检查允许30秒观察窗口，仍不重试启动/切换受保护页面。
@@ -158,6 +168,10 @@ def prepare_current_login(
             focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
             if focus is None or focus == (TARGET, SPLASH):
                 sleep(0.3)
+                continue
+            if focus == KNOWN_AD_COMPONENT:
+                dismiss_known_ad(bridge, ui_factory(bridge))
+                sleep(0.2)
                 continue
             if focus != (TARGET, MAIN):
                 return {"state": "protected_or_other_page", "server_auth_proven": False}

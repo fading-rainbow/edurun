@@ -9,7 +9,7 @@ from collections.abc import Callable
 from .auth_ui import LAUNCHER, MAIN, SPLASH, target_task_tops
 from .mumu import MuMuBridge
 from .target import RUN_ACTIVITY, TARGET, parse_run_metrics
-from .ui import AppUI, focused_component
+from .ui import KNOWN_AD_COMPONENT, AppUI, dismiss_known_ad, focused_component
 
 BEFORE = TARGET + ".activities.school_run.RunBeforeActivity"
 
@@ -61,6 +61,10 @@ def enter_formal_zero(
     while clock() < deadline and authorize() is True:
         current = focus()
         if current is None or current == (TARGET, SPLASH):
+            sleep(0.2)
+            continue
+        if current == KNOWN_AD_COMPONENT:
+            dismiss_known_ad(bridge, ui, authorize=authorize)
             sleep(0.2)
             continue
         if current not in {(TARGET, MAIN), (TARGET, BEFORE), (TARGET, RUN_ACTIVITY)}:

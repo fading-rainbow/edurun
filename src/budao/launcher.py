@@ -271,6 +271,7 @@ class LauncherHandler(BaseHTTPRequestHandler):
             "stopping",
             "finishing",
             "verification_required",
+            "recovering",
         }
         code = 202 if active else (200 if self.path == "/v1/check" else 409)
         self.reply(code, report)
