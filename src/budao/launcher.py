@@ -95,6 +95,10 @@ class PreparationCoordinator:
                 except Exception:
                     pass
             visible_login = login.get("state") == "logged_in_ui"
+            expired_login = (
+                login.get("state") == "expired_record"
+                and login.get("detail") == "过期记录，需用户处理"
+            )
             item(
                 "login",
                 "乐跑QQ／微信授权",
@@ -102,8 +106,8 @@ class PreparationCoordinator:
                 "本次已登录界面已核对；服务端授权仍由实际开始流程复核"
                 if visible_login
                 else (
-                    login.get("detail")
-                    if isinstance(login.get("detail"), str)
+                    "过期记录，需用户处理"
+                    if expired_login
                     else "当前客户端登录界面未确认；已有会话/必要认证不被覆盖"
                 ),
             )

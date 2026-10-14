@@ -329,3 +329,54 @@ def test_cross_day_expired_record_preparation_and_http_status_not_permanently_bu
         assert start_report["message"] == "过期记录，需用户处理"
         assert not start_report["run_started"]
         assert not app.execution.slot.locked()
+
+
+GENERIC_LOGIN_DETAIL = "当前客户端登录界面未确认；已有会话/必要认证不被覆盖"
+EXPIRED_DETAIL = "过期记录，需用户处理"
+
+
+@pytest.mark.parametrize(
+    ("login", "expected"),
+    [
+        ({"state": "expired_record", "detail": EXPIRED_DETAIL}, EXPIRED_DETAIL),
+        ({"state": "expired_record", "detail": "unexpected text"}, GENERIC_LOGIN_DETAIL),
+        ({"state": "expired_record", "detail": EXPIRED_DETAIL + " "}, GENERIC_LOGIN_DETAIL),
+        ({"state": "unknown", "detail": "PRIVATE_TEST_TOKEN account=abc"}, GENERIC_LOGIN_DETAIL),
+        (
+            {"state": "unknown", "detail": r"C:\Users\private\.local\profile.json"},
+            GENERIC_LOGIN_DETAIL,
+        ),
+        (
+            {"state": "expired_record", "detail": "ValueError: /home/x/secret"},
+            GENERIC_LOGIN_DETAIL,
+        ),
+        ({"state": "expired_record", "detail": None}, GENERIC_LOGIN_DETAIL),
+        ({"state": "expired_record", "detail": 123}, GENERIC_LOGIN_DETAIL),
+        ({"state": "expired_record", "detail": ["x"]}, GENERIC_LOGIN_DETAIL),
+        ({"state": "unknown", "detail": EXPIRED_DETAIL}, GENERIC_LOGIN_DETAIL),
+        ({"state": "logged_in_ui", "detail": EXPIRED_DETAIL}, None),
+        ({"state": "logged_in_ui", "detail": r"D:\private\path"}, None),
+    ],
+)
+def test_login_detail_is_whitelisted_in_public_report(tmp_path, login, expected):
+    class Device:
+        def check_device(self):
+            pass
+
+    app = PreparationCoordinator(
+        tmp_path,
+        Path(".local/missing.json"),
+        bridge_factory=lambda _: Device(),
+        login_preparer=lambda _b: login,
+    )
+    report = app.check(True)
+    check = next(c for c in report["checks"] if c["key"] == "login")
+    if expected is None:
+        assert check["state"] == "pass"
+        assert check["detail"] == "本次已登录界面已核对；服务端授权仍由实际开始流程复核"
+    else:
+        assert check["state"] == "unknown"
+        assert check["detail"] == expected
+    text = str(report)
+    for leaked in ("PRIVATE_TEST_TOKEN", "private", "unexpected text", "ValueError", "secret"):
+        assert leaked not in text
