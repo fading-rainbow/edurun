@@ -91,9 +91,12 @@ class RuntimeDispatcher:
         *,
         clock: Callable[[], float] = time.monotonic,
         pace_range_s_per_km: tuple[float, float] | None = None,
+        asynchronous_renewals: bool = False,
     ):
         if not isinstance(worker, MuMuPositionWorker) or worker.engine.planner is not planner:
             raise ValueError("调度器须与同一个受守卫的MuMu路网/位置核心配对")
+        if type(asynchronous_renewals) is not bool:
+            raise ValueError("异步位置续期选项必须是布尔值")
         if pace_range_s_per_km is not None and (
             not isinstance(pace_range_s_per_km, tuple)
             or len(pace_range_s_per_km) != 2
@@ -107,6 +110,7 @@ class RuntimeDispatcher:
             raise ValueError("配速范围须为现场规则确认的两个有限正数，单位秒/km")
         self.planner, self.observer, self.worker, self.clock = planner, observer, worker, clock
         self.pace_range_s_per_km = pace_range_s_per_km
+        self.asynchronous_renewals = asynchronous_renewals
         self.controller = RunController(
             minimum_distance_m=planner.config.minimum_distance_m + planner.config.margin_m,
             maximum_frame_age_s=2,
@@ -191,8 +195,15 @@ class RuntimeDispatcher:
                 self.controller.mark_arrived()  # 仅几何到达，完成仍需App卡片确认两帧。
                 self.worker.pause("接近位置已到达，等待App打卡确认")
                 return Decision(action="wait", reason="几何到达不等于打卡成功")
-            if self.route_key == key and not state.path_done:
-                self.worker.renew(frame.sampled_at)
+            if (
+                self.route_key == key
+                and not state.path_done
+                and (not self.asynchronous_renewals or state.moving)
+            ):
+                if self.asynchronous_renewals:
+                    self.worker.renew_async(frame.sampled_at)
+                else:
+                    self.worker.renew(frame.sampled_at)
                 return decision
             if decision.action == "navigate":
                 planned = self.planner.plan(position, decision.target)

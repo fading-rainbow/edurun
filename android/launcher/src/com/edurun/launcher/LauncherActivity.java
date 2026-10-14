@@ -26,6 +26,7 @@ import org.json.JSONObject;
 /** 配对到本机后台。没有QQ密码、人脸识别、图片上传或伪造跑步结果的代码。 */
 public final class LauncherActivity extends Activity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService controls = Executors.newSingleThreadExecutor();
     private TextView status, checks, photo;
     private Button start;
     private boolean alive = true;
@@ -67,6 +68,8 @@ public final class LauncherActivity extends Activity {
         start.setOnClickListener(v -> request("/v1/start")); content.addView(start);
         Button inspect = new Button(this); inspect.setText("仅检查准备条件");
         inspect.setOnClickListener(v -> request("/v1/check")); content.addView(inspect);
+        Button stop = new Button(this); stop.setText("停止自动输入（不提交）");
+        stop.setOnClickListener(v -> requestStop()); content.addView(stop);
         content.addView(text("核验登录会正常打开乐跑客户端，再返回本助手；不点击开始跑步。\n"
             + "仅连接这台电脑的本机后台；账号密码不在助手中输入。\n"
             + "准备检查失败不会启动乐跑。本人验证等必要操作出现时暂停等待。", 12, false));
@@ -141,25 +144,23 @@ public final class LauncherActivity extends Activity {
             String message;
             JSONObject response = null;
             try {
-                File config = new File(getFilesDir(), "launcher.json");
-                JSONObject paired;
-                try (InputStream input = new FileInputStream(config)) {
-                    paired = new JSONObject(new String(readLimited(input, 16384), StandardCharsets.UTF_8));
-                }
-                String token = paired.getString("token");
-                if (!token.matches("[A-Za-z0-9_-]{40,100}")) throw new IllegalArgumentException();
+                String token = pairedToken();
                 response = exchange(path, token, new JSONObject().put("photo_ready", ready));
-                long deadline = android.os.SystemClock.elapsedRealtime() + 60000;
+                long deadline = android.os.SystemClock.elapsedRealtime()
+                    + ("/v1/start".equals(path) ? 1200000 : 60000);
                 // 只轮询本次任务状态；超时/断线不重发POST、不排队开启第二次导航。
-                while ("checking".equals(response.optString("state"))
+                while (active(response.optString("state"))
                         && android.os.SystemClock.elapsedRealtime() < deadline) {
                     Thread.sleep(500);
                     response = exchange("/v1/status", token, null);
                 }
-                if ("checking".equals(response.optString("state"))) {
-                    response.put("message", "后台仍在检查；稍后查看结果，不要重复操作乐跑客户端");
+                if (active(response.optString("state"))) {
+                    response.put("message", "后台操作可能仍在进行；不要重复开始，可请求停止输入");
                 }
                 message = response.optString("message", "没有收到明确准备结果");
+                if (response.optBoolean("cleanup_unconfirmed") || response.optBoolean("app_pause_unconfirmed")) {
+                    message += "\n清理或原App暂停尚未确认；请勿重新开始，返回原App核对。";
+                }
             } catch (Exception error) {
                 message = "后台连接中断；检查可能仍在进行，可稍后查看状态";
             }
@@ -181,7 +182,37 @@ public final class LauncherActivity extends Activity {
         });
     }
 
+    private static boolean active(String state) {
+        return "checking".equals(state) || "preparing".equals(state)
+            || "starting".equals(state) || "running".equals(state) || "stopping".equals(state)
+            || "verification_required".equals(state) || "finishing".equals(state);
+    }
+
+    private String pairedToken() throws Exception {
+        JSONObject paired;
+        try (InputStream input = new FileInputStream(new File(getFilesDir(), "launcher.json"))) {
+            paired = new JSONObject(new String(readLimited(input, 16384), StandardCharsets.UTF_8));
+        }
+        String token = paired.getString("token");
+        if (!token.matches("[A-Za-z0-9_-]{40,100}")) throw new IllegalArgumentException();
+        return token;
+    }
+
+    private void requestStop() {
+        status.setText("正在请求停止自动输入；不是结束或保存记录…");
+        // 独立控制通道不等待正在运行的GET轮询结束；不发第二次开始请求。
+        controls.execute(() -> {
+            String message;
+            try {
+                JSONObject report = exchange("/v1/stop", pairedToken(), new JSONObject());
+                message = report.optString("message", "尚未收到停止结果");
+            } catch (Exception error) { message = "停止请求尚未确认；请返回原App正常暂停"; }
+            final String result = message;
+            runOnUiThread(() -> { if (alive) status.setText(result); });
+        });
+    }
+
     @Override protected void onDestroy() {
-        alive = false; io.shutdownNow(); super.onDestroy();
+        alive = false; io.shutdownNow(); controls.shutdownNow(); super.onDestroy();
     }
 }

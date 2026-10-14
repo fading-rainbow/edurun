@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .auth_ui import prepare_current_login
+from .execution import ExecutionCoordinator
 from .mumu import MuMuBridge
 from .profiles import preflight_profile, private_file
 
@@ -22,9 +23,11 @@ class PreparationCoordinator:
         *,
         bridge_factory=MuMuBridge,
         login_preparer=prepare_current_login,
+        execution_preflight=None,
     ):
         self.root, self.profile, self.bridge_factory = root.resolve(), profile, bridge_factory
         self.login_preparer = login_preparer
+        self.execution_preflight = execution_preflight
         self.lock = threading.Lock()
         self.last_report = {"state": "unchecked", "message": "尚未检查准备条件", "checks": []}
 
@@ -102,11 +105,33 @@ class PreparationCoordinator:
             )
             item("motion", "自然运动输入", "not_ready", "MuMu自然步频尚未实际验收")
             item("runtime", "完整自动流程", "not_ready", "开始、观察、驱动与成绩核验尚未完整接通")
+            if self.execution_preflight is not None and route is not None and bridge is not None:
+                overrides = self.execution_preflight(route, bridge)
+                if not isinstance(overrides, dict) or set(overrides) != {
+                    "route",
+                    "motion",
+                    "runtime",
+                }:
+                    raise ValueError("本机执行预检结构未知")
+                for check in checks:
+                    if check["key"] in overrides:
+                        state, detail = overrides[check["key"]]
+                        if state not in {"pass", "not_ready"} or not isinstance(detail, str):
+                            raise ValueError("本机执行预检结果未知")
+                        check.update(state=state, detail=detail)
+                        check["title"] = {
+                            "route": "已确认点的有限试运行",
+                            "motion": "三轴输入链路",
+                            "runtime": "有界执行编排",
+                        }[check["key"]]
+            ready = all(check["state"] == "pass" for check in checks)
             self.last_report = {
-                "state": "blocked",
-                "message": "准备条件尚未全部通过，未开始乐跑",
+                "state": "ready" if ready else "blocked",
+                "message": "本次有界执行准备通过，尚未开始"
+                if ready
+                else "准备条件尚未全部通过，未开始乐跑",
                 "checks": checks,
-                "ready": False,
+                "ready": ready,
                 "run_started": False,
                 "records_submitted": 0,
                 "needs_human_verification_if_requested": True,
@@ -143,10 +168,18 @@ class PreparationCoordinator:
 class LauncherServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, coordinator: PreparationCoordinator, token: str, port: int = 8766):
+    def __init__(
+        self,
+        coordinator: PreparationCoordinator,
+        token: str,
+        port: int = 8766,
+        *,
+        runner_factory=None,
+    ):
         if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{40,100}", token):
             raise ValueError("启动助手需要本机配对密钥，不接受空密钥")
         self.coordinator, self.token = coordinator, token
+        self.execution = ExecutionCoordinator(coordinator, runner_factory)
         super().__init__(("127.0.0.1", port), LauncherHandler)
 
 
@@ -179,7 +212,7 @@ class LauncherHandler(BaseHTTPRequestHandler):
         if not self.authorized():
             self.reply(403, {"message": "本机配对未通过"})
         elif self.path == "/v1/status":
-            self.reply(200, self.server.coordinator.status())
+            self.reply(200, self.server.execution.status())
         else:
             self.reply(404, {"message": "接口不存在"})
 
@@ -204,7 +237,7 @@ class LauncherHandler(BaseHTTPRequestHandler):
         if not self.authorized():
             self.reply(403, {"message": "本机配对未通过"})
             return
-        if self.path not in {"/v1/check", "/v1/start"}:
+        if self.path not in {"/v1/check", "/v1/start", "/v1/stop"}:
             self.reply(404, {"message": "接口不存在"})
             return
         try:
@@ -212,20 +245,45 @@ class LauncherHandler(BaseHTTPRequestHandler):
             if (
                 self.headers.get("Content-Type") != "application/json"
                 or not isinstance(data, dict)
-                or set(data) != {"photo_ready"}
-                or type(data["photo_ready"]) is not bool
+                or (
+                    set(data) != set()
+                    if self.path == "/v1/stop"
+                    else set(data) != {"photo_ready"} or type(data["photo_ready"]) is not bool
+                )
             ):
                 raise ValueError
         except (ValueError, UnicodeError):
             self.reply(400, {"message": "请求结构不符合要求；不回显输入"})
             return
         # 登录准备可正常打开客户端；未通过运行条件时不开始跑步、位置输出或上传。
-        report = self.server.coordinator.begin_check(data["photo_ready"])
-        code = 202 if report["state"] == "checking" else (200 if self.path == "/v1/check" else 409)
+        if self.path == "/v1/stop":
+            report = self.server.execution.stop()
+            self.reply(202 if report["state"] == "stopping" else 200, report)
+            return
+        report = self.server.execution.begin(
+            start=self.path == "/v1/start", photo_ready=data["photo_ready"]
+        )
+        active = report["state"] in {
+            "checking",
+            "preparing",
+            "starting",
+            "running",
+            "stopping",
+            "finishing",
+            "verification_required",
+        }
+        code = 202 if active else (200 if self.path == "/v1/check" else 409)
         self.reply(code, report)
 
 
-def serve_launcher(root: Path, profile: Path, config_file: Path, port: int = 8766):
+def serve_launcher(
+    root: Path,
+    profile: Path,
+    config_file: Path,
+    port: int = 8766,
+    *,
+    runtime_file: Path | None = None,
+):
     if port != 8766:
         raise ValueError("当前原生客户端固定使用8766本机反向端口")
     config_file = private_file(root, config_file, must_exist=False)
@@ -242,5 +300,15 @@ def serve_launcher(root: Path, profile: Path, config_file: Path, port: int = 876
         token = secrets.token_urlsafe(32)
         with config_file.open("x", encoding="utf-8") as stream:
             json.dump({"token": token}, stream)
-    with LauncherServer(PreparationCoordinator(root, profile), token, port) as server:
+    runtime = None
+    if runtime_file is not None:
+        from .live_runtime import LiveRuntime
+
+        runtime = LiveRuntime(root, profile, runtime_file)
+    coordinator = PreparationCoordinator(
+        root, profile, execution_preflight=runtime.preflight if runtime else None
+    )
+    with LauncherServer(
+        coordinator, token, port, runner_factory=runtime.build if runtime else None
+    ) as server:
         server.serve_forever()

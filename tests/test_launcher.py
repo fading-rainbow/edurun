@@ -271,3 +271,28 @@ def test_cli_exposes_preparation_service_without_default_device_start(monkeypatc
         Path(".local/profiles/current/profile.json"),
         Path(".local/launcher/current/service.json"),
     )
+
+
+def test_authenticated_stop_requires_empty_body_and_does_not_end_or_save_a_run(tmp_path):
+    with server(tmp_path) as (app, client):
+        assert client.post("/v1/stop", json={}).status_code == 403
+        assert (
+            client.post("/v1/stop", headers=headers(), json={"photo_ready": True}).status_code
+            == 400
+        )
+        result = client.post("/v1/stop", headers=headers(), json={})
+        assert result.status_code == 200 and app.execution.status()["state"] == "unchecked"
+
+
+def test_native_stop_has_its_own_control_executor_and_long_poll_never_reposts_start():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "android/launcher/src/com/edurun/launcher/LauncherActivity.java").read_text(
+        "utf-8"
+    )
+    assert (
+        "controls.execute" in source
+        and 'exchange("/v1/stop", pairedToken(), new JSONObject())' in source
+    )
+    assert '"/v1/start".equals(path) ? 1200000 : 60000' in source
+    assert '"running".equals(state)' in source and '"stopping".equals(state)' in source
+    assert source.count('exchange(path, token, new JSONObject().put("photo_ready", ready))') == 1

@@ -54,6 +54,7 @@ def test_one_click_creates_causal_three_frame_witness_not_record_or_movement(mon
     connector, _, clicked, _ = setup(monkeypatch)
     witness = connector.begin_once("a" * 32, lambda: True)
     assert clicked == ["start"]
+    assert connector.last_action_request == "a" * 32
     assert (
         witness.before.sampled_at
         < witness.action_at
@@ -70,6 +71,7 @@ def test_not_authorized_or_stale_does_not_click(monkeypatch):
     with pytest.raises(ValueError, match="尚未确认"):
         connector.begin_once("a" * 32, lambda: False)
     assert not clicked
+    assert connector.last_action_request is None
     connector, clock, clicked, _ = setup(monkeypatch)
     clock[0] = 3
     with pytest.raises(ValueError, match="过期"):

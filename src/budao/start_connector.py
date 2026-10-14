@@ -60,6 +60,7 @@ class StartConnector:
         self.bridge, self.template, self.ui_factory = bridge, template, ui_factory
         self.clock, self.sleep, self.ui = clock, sleep, None
         self.used_requests: set[str] = set()
+        self.last_action_request: str | None = None
 
     def capture(
         self,
@@ -228,6 +229,7 @@ class StartConnector:
         if button.count != 1:
             raise ValueError("开始控件不唯一；未点击")
         action_at = self.clock()
+        self.last_action_request = request_id  # 点击报错也可能已生效；仅用于保守清理。
         button.click()  # 实测4.3.0开始为一次点击，暂停才是长按；失败不重发。
         first = None
         deadline = before.frame.sampled_at + 15

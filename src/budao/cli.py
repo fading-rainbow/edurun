@@ -54,6 +54,9 @@ def main() -> int:
     launcher.add_argument(
         "--config", type=Path, default=Path(".local/launcher/current/service.json")
     )
+    launcher.add_argument(
+        "--runtime", type=Path, help="本机明确配置的有界正式试运行；缺省只检查，不开始"
+    )
     simulate_parser = commands.add_parser("simulate")
     simulate_parser.add_argument("--runs", type=int, default=30)
     simulate_parser.add_argument("--seed", type=int, default=0)
@@ -161,7 +164,10 @@ def main() -> int:
             serve_editor(args.port)
             return 0
         elif args.command == "launcher-service":
-            serve_launcher(Path.cwd(), args.profile, args.config)
+            if args.runtime is None:
+                serve_launcher(Path.cwd(), args.profile, args.config)
+            else:
+                serve_launcher(Path.cwd(), args.profile, args.config, runtime_file=args.runtime)
             return 0
         elif args.command == "simulate":
             if not 1 <= args.runs <= 1000:

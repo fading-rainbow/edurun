@@ -16,6 +16,16 @@ SPLASH = TARGET + ".activities.splash.SplashActivity"
 LAUNCHER = "com.edurun.launcher"
 
 
+def target_task_tops(tasks: str) -> list[str]:
+    if not tasks.startswith("ACTIVITY MANAGER ACTIVITIES") or len(tasks) > 2 * 1024 * 1024:
+        raise ValueError("实际任务栈未知")
+    tops = re.findall(r"Hist\s+#0:.*?\bcom\.lptiyu\.tanke/([A-Za-z0-9_.$]+)", tasks)
+    expanded = [TARGET + t if t.startswith(".") else t for t in tops]
+    if TARGET in tasks and not expanded:
+        raise ValueError("目标任务存在但顶部未解析；不导航覆盖")
+    return expanded
+
+
 def login_ui(hierarchy: str) -> dict:
     result = {"state": "unknown", "student_verified_ui": False, "server_auth_proven": False}
     if (
@@ -131,8 +141,10 @@ def prepare_current_login(
         return {"state": "protected_or_other_page", "server_auth_proven": False}
     if from_launcher:
         tasks = bridge.run("shell", "dumpsys", "activity", "activities")
-        tops = re.findall(r"Hist #0:.*?\bcom\.lptiyu\.tanke/([A-Za-z0-9_.$]+)", tasks)
-        expanded = [TARGET + t if t.startswith(".") else t for t in tops]
+        try:
+            expanded = target_task_tops(tasks)
+        except ValueError:
+            return {"state": "unknown_target_tasks", "server_auth_proven": False}
         if any(t != MAIN for t in expanded):
             return {"state": "existing_target_session", "server_auth_proven": False}
         bridge.run("shell", "am", "start", "-n", TARGET + "/.activities.splash.SplashActivity")

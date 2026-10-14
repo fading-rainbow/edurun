@@ -119,7 +119,14 @@ def test_nickless_fallback_cannot_accept_hidden_or_duplicate_nickname_fields():
 
 
 class Device(MuMuBridge):
-    def __init__(self, focus=(TARGET, MAIN), *, tasks="", version="4.3.0", changed=False):
+    def __init__(
+        self,
+        focus=(TARGET, MAIN),
+        *,
+        tasks="ACTIVITY MANAGER ACTIVITIES\n",
+        version="4.3.0",
+        changed=False,
+    ):
         self.focus, self.tasks, self.version, self.changed = focus, tasks, version, changed
         self.calls = []
         self.reads = 0
@@ -153,6 +160,23 @@ def test_protected_page_declined_before_tree_read():
     assert not any(call[:3] == ("shell", "am", "start") for call in device.calls)
 
 
+def test_task_stack_multiple_spaces_and_unknown_target_fail_closed():
+    from budao.auth_ui import target_task_tops
+
+    for spaces in (" ", "  ", "\t"):
+        assert target_task_tops(
+            "ACTIVITY MANAGER ACTIVITIES\nHist"
+            + spaces
+            + "#0: ActivityRecord{1 u0 com.lptiyu.tanke/.activities.main.MainActivity t4}"
+        ) == [MAIN]
+    device = Device(
+        (LAUNCHER, LAUNCHER + ".LauncherActivity"),
+        tasks="ACTIVITY MANAGER ACTIVITIES\npackageName=com.lptiyu.tanke",
+    )
+    assert prepare_current_login(device)["state"] == "unknown_target_tasks"
+    assert not any(call[:3] == ("shell", "am", "start") for call in device.calls)
+
+
 def test_read_checks_version_and_foreground_change():
     assert (
         inspect_login_ui(Device(version="new"), lambda _: pytest.fail("Wrong version"))["state"]
@@ -174,7 +198,9 @@ def test_launcher_login_navigation_never_overrides_background_run_or_protected_t
     ]:
         device = Device(
             (LAUNCHER, LAUNCHER + ".LauncherActivity"),
-            tasks="Hist #0: ActivityRecord{123 u0 com.lptiyu.tanke/" + page + " t4}",
+            tasks="ACTIVITY MANAGER ACTIVITIES\nHist  #0: ActivityRecord{123 u0 com.lptiyu.tanke/"
+            + page
+            + " t4}",
         )
         assert prepare_current_login(device)["state"] == "existing_target_session"
         assert not any(call[:3] == ("shell", "am", "start") for call in device.calls)

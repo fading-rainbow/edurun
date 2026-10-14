@@ -339,3 +339,20 @@ def test_pace_range_must_be_explicit_well_formed_rule_values(setup, value):
         RuntimeDispatcher(
             dispatcher.planner, dispatcher.observer, worker, pace_range_s_per_km=value
         )
+
+
+def test_opt_in_async_renewal_uses_mailbox_and_replans_after_pause(setup, monkeypatch):
+    dispatcher, worker, _bridge, clock, _config = setup
+    dispatcher.asynchronous_renewals = True
+    dispatcher.start(witness())
+    assert update(setup, 3).action == "base_route"
+    worker._tick()
+    calls = []
+    original = worker.renew_async
+    monkeypatch.setattr(worker, "renew", lambda _: pytest.fail("Do not wait for GPS IO"))
+    monkeypatch.setattr(worker, "renew_async", lambda t: calls.append(t) or original(t))
+    assert update(setup, 4).action == "base_route" and calls == [4]
+    worker.pause()
+    # A cleared mailbox cannot be rearmed with renewal; a new current-position path is needed.
+    assert update(setup, 5).action == "base_route"
+    assert calls == [4] and worker.engine.player.points[0] == worker.check().position
