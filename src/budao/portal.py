@@ -22,6 +22,7 @@ def enter_formal_zero(
     clock=time.monotonic,
     sleep=time.sleep,
     expected_zone: str | None = None,
+    scene_helper=None,
 ):
     if not isinstance(bridge, MuMuBridge) or not callable(authorize):
         raise ValueError("正式入口仅支持独立MuMu及明确许可")
@@ -58,6 +59,7 @@ def enter_formal_zero(
     deadline, run_selected, entered, rules_seen = clock() + 40, False, False, False
     grade_frames = []
     safety_confirmed = False
+    advised = False
     while clock() < deadline and authorize() is True:
         current = focus()
         if current is None or current == (TARGET, SPLASH):
@@ -127,6 +129,21 @@ def enter_formal_zero(
                 rules_seen = True
             elif current == (TARGET, RUN_ACTIVITY):
                 metrics = parse_run_metrics(tree)
+                if (
+                    entered
+                    and not rules_seen
+                    and not advised
+                    and scene_helper is not None
+                    and metrics["distance_m"] == 0
+                    and metrics["elapsed_s"] == 0
+                    and metrics["completed_checkpoints"] == 0
+                ):
+                    advised = True
+                    began = clock()
+                    if scene_helper.open_rules(bridge, ui, authorize) is not True:
+                        raise ValueError("多模态未建议或未命中规则控件，不开始")
+                    deadline += min(30, clock() - began)
+                    continue
                 if (
                     not entered
                     or not rules_seen

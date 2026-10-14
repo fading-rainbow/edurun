@@ -39,6 +39,7 @@ class RuntimeSettings(StrictModel):
     maximum_s: int = Field(default=900, ge=30, le=900)
     normal_save_authorized: bool = False
     run_zone_label: str | None = Field(default=None, min_length=1, max_length=128)
+    vision_config: Path | None = None
 
 
 def verify_motion_evidence(root: Path, path: Path, clip) -> bool:
@@ -229,12 +230,26 @@ class LiveRuntime:
         runner.save_authorized = self.settings.normal_save_authorized
 
         def prepare_start(authorize):
+            scene = None
+            if self.settings.vision_config is not None:
+                from .ui_advisor import SceneAssistant, UIAdvisor
+
+                scene = SceneAssistant(
+                    UIAdvisor.from_private_config(self.root, self.settings.vision_config)
+                )
             runner.start_stamp = datetime.strptime(
                 bridge.run("shell", "date", "+%F_%H:%M").strip(), "%Y-%m-%d_%H:%M"
             )
-            runner.grade_before = enter_formal_zero(
-                bridge, authorize, expected_zone=self.settings.run_zone_label
-            )
+            try:
+                runner.grade_before = enter_formal_zero(
+                    bridge,
+                    authorize,
+                    expected_zone=self.settings.run_zone_label,
+                    scene_helper=scene,
+                )
+            finally:
+                if scene is not None:
+                    scene.client.close()
 
         runner.prepare_start = prepare_start
         return runner

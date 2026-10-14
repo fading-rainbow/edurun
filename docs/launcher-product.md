@@ -8,6 +8,16 @@
 
 ## 2026-10-14 当前接通工作
 
+现场又修复了广告SDK活动页、迟到的成绩基线和正常安全提示，未对登录或本人验证页
+使用通用返回。原App未每次自动弹出标准时，已接入可选多模态建议：发送遮盖系统栏、
+身份字段的零状态界面，模型建议打开规则；程序重新采集零状态、核对建议像素命中
+真实`img_show_must_know_tip`控件，才按资源ID点击。规则数值仍由原App独立读取。
+专用推理key仅留本机忽略目录；模型不生成命令、经纬度或有效成绩，不看到密码和本人
+验证画面。仅有多模态链路/规则打开实测，**不是正式跑步或原生整体验收**。
+采用[官方图片输入接口](https://developers.openai.com/api/docs/guides/images-vision)和
+[结构化输出](https://developers.openai.com/api/docs/guides/structured-outputs)协议；
+不同中转站模型的实际兼容性仍须现场测试，不能由模型目录列表推断。
+
 原生按钮现连接单执行槽、正式入口、因果开始证据、实时卡片路由和有界三轴输入。
 只有本机显式提供`launcher-service --runtime .local/launcher/current/runtime.json`才装配
 实际执行；缺省仍只检查，不开始。HTTP请求不能提供执行代码、坐标、密钥或修改授权。

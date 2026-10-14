@@ -153,7 +153,11 @@ class ExecutionCoordinator:
             report = self.preparation.check(photo_ready)
             if self.cancel.is_set():
                 return
-            self._set(report | {"operation_id": self.status()["operation_id"]})
+            visible = report | {"operation_id": self.status()["operation_id"]}
+            if start and self._eligible_preparation(report) and self.runner_factory is not None:
+                # 工厂组装期间仍是活动操作，不能泄露ready终态让原生客户端提前停止轮询。
+                visible.update(state="preparing", message=MESSAGES["preparing"])
+            self._set(visible)
             if report.get("state") == "checking":
                 self._set(
                     self.status()

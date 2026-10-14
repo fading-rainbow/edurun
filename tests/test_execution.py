@@ -63,6 +63,26 @@ def wait_terminal(coordinator):
     return coordinator.status()
 
 
+def test_factory_assembly_never_exposes_terminal_ready_to_native_poller():
+    entered, release = threading.Event(), threading.Event()
+    runner_release = threading.Event()
+    runner_release.set()
+
+    def factory():
+        entered.set()
+        assert release.wait(3)
+        return SyntheticRunner(runner_release)
+
+    coordinator = ExecutionCoordinator(Preparation(), factory)
+    try:
+        coordinator.begin(start=True, photo_ready=True)
+        assert entered.wait(1)
+        assert coordinator.status()["state"] == "preparing"
+    finally:
+        release.set()
+    assert wait_terminal(coordinator)["state"] == "finish_ready"
+
+
 def test_start_and_check_share_single_slot_and_never_queue_duplicate_runner():
     release = threading.Event()
     runner = SyntheticRunner(release)
