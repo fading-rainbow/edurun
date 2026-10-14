@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from .auth_ui import LAUNCHER, prepare_current_login, target_task_tops
+from .auth_ui import LAUNCHER, SPLASH, prepare_current_login, target_task_tops
 from .card_observer import NamedCardObserver
 from .driver import DriveEngine
 from .finish_connector import FinishConnector
@@ -259,9 +259,14 @@ class LiveRuntime:
                 "shell",
                 "am",
                 "start",
-                "--activity-reorder-to-front",
+                "-a",
+                "android.intent.action.MAIN",
+                "-c",
+                "android.intent.category.LAUNCHER",
                 "-n",
-                TARGET + "/" + RUN_ACTIVITY,
+                TARGET + "/" + SPLASH,
+                "-f",
+                "0x10000000",
             )
         if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != (
             TARGET,

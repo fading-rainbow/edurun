@@ -41,3 +41,46 @@ def test_missing_or_same_uid_proof_is_not_an_independent_receiver(tmp_path):
     }
     (tmp_path / ".local/proof.json").write_text(json.dumps(proof), "utf-8")
     assert not verify_motion_evidence(tmp_path, Path(".local/proof.json"), sample)
+
+
+def test_native_recovery_brings_existing_task_via_exported_launcher_not_run_activity(
+    tmp_path, monkeypatch
+):
+    from budao.auth_ui import LAUNCHER, SPLASH
+    from budao.target import RUN_ACTIVITY, TARGET
+
+    directory = tmp_path / ".local"
+    directory.mkdir()
+    (directory / "run.json").write_text(
+        json.dumps(settings() | {"resume_evidence": ".local/pending"})
+    )
+    runtime = LiveRuntime(tmp_path, Path(".local/profile.json"), Path(".local/run.json"))
+    monkeypatch.setattr(runtime, "_resume_ticket", lambda _: None)
+
+    class Bridge:
+        def __init__(self):
+            self.started, self.calls = False, []
+
+        def run(self, *args):
+            self.calls.append(args)
+            if args[:3] == ("shell", "am", "start"):
+                self.started = True
+                return ""
+            if "activities" in args:
+                return (
+                    "ACTIVITY MANAGER ACTIVITIES\nHist #1: ActivityRecord{a u0 "
+                    + TARGET
+                    + "/"
+                    + RUN_ACTIVITY
+                    + " t60}\nHist #0: ActivityRecord{b u0 "
+                    + TARGET
+                    + "/.activities.main.MainActivity t60}"
+                )
+            focus = TARGET + "/" + RUN_ACTIVITY if self.started else LAUNCHER + "/.LauncherActivity"
+            return "mCurrentFocus=Window{a u0 " + focus + "}"
+
+    b = Bridge()
+    assert runtime.prepare_login(b)["state"] == "logged_in_ui"
+    starts = [a for a in b.calls if a[:3] == ("shell", "am", "start")]
+    assert len(starts) == 1 and TARGET + "/" + SPLASH in starts[0]
+    assert TARGET + "/" + RUN_ACTIVITY not in starts[0]
