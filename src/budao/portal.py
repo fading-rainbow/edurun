@@ -21,6 +21,7 @@ def enter_formal_zero(
     ui_factory=AppUI,
     clock=time.monotonic,
     sleep=time.sleep,
+    expected_zone: str | None = None,
 ):
     if not isinstance(bridge, MuMuBridge) or not callable(authorize):
         raise ValueError("正式入口仅支持独立MuMu及明确许可")
@@ -56,6 +57,7 @@ def enter_formal_zero(
         raise ValueError("正式入口必须从已登录首页开始，不接管旧运行")
     deadline, run_selected, entered, rules_seen = clock() + 40, False, False, False
     grade_frames = []
+    safety_confirmed = False
     while clock() < deadline and authorize() is True:
         current = focus()
         if current is None or current == (TARGET, SPLASH):
@@ -73,6 +75,19 @@ def enter_formal_zero(
                 if focus() != current or authorize() is not True:
                     raise ValueError("广告关闭许可改变")
                 close.click()
+            elif ui.device(resourceId=TARGET + ":id/tv_title", text="安全提示").count == 1:
+                if (
+                    not entered
+                    or safety_confirmed
+                    or not expected_zone
+                    or ui.device(
+                        resourceId=TARGET + ":id/tv_current_run_zone", text=expected_zone
+                    ).count
+                    != 1
+                ):
+                    raise ValueError("安全提示的本次跑区未核对，不进入")
+                click("tv_sure", "进入乐跑", current)
+                safety_confirmed = True
             elif not run_selected:
                 click("tv_run", "乐跑", current)
                 run_selected = True

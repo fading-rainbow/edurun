@@ -168,6 +168,17 @@ def prepare_current_login(
             ):
                 return {"state": "unsupported_version", "server_auth_proven": False}
             ui = ui or ui_factory(bridge)
+            if ui.device(resourceId=TARGET + ":id/tv_title", text="安全提示").count == 1:
+                cancel = ui.device(resourceId=TARGET + ":id/tv_cancle", text="取消")
+                enter = ui.device(resourceId=TARGET + ":id/tv_sure", text="进入乐跑")
+                if cancel.count != 1 or enter.count != 1:
+                    return {"state": "unknown_overlay", "server_auth_proven": False}
+                bridge.check_device()
+                if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != focus:
+                    return {"state": "foreground_changed", "server_auth_proven": False}
+                cancel.click()  # 仅取消尚未开始的已知入口提示，不取消或提交任何记录。
+                sleep(0.2)
+                continue
             close = ui.device(resourceId=TARGET + ":id/ad_close", description="关闭")
             if close.count == 1:
                 bridge.check_device()

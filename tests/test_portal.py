@@ -118,3 +118,62 @@ def test_slow_grade_or_interstitial_waits_without_second_tab_or_start(monkeypatc
     bridge = Bridge()
     assert enter_formal_zero(bridge, lambda: True, ui_factory=DelayedUI, sleep=lambda _: None) == 1
     assert bridge.clicks == ["tv_run", "tv_enterRun", "tv_cancle"]
+
+
+def test_safety_entry_is_single_and_requires_exact_zone(monkeypatch):
+    monkeypatch.setattr(
+        "budao.portal.parse_run_metrics",
+        lambda _: {
+            "distance_m": 0,
+            "elapsed_s": 0,
+            "completed_checkpoints": 0,
+            "counter_label": "已打卡",
+        },
+    )
+
+    class SafetyUI(UI):
+        def __call__(self, **kwargs):
+            node = super().__call__(**kwargs)
+            name = kwargs.get("resourceId", "").split("/")[-1]
+            if self.bridge.phase == "safety":
+                node.count = int(
+                    name in {"tv_title", "tv_sure"}
+                    or (
+                        name == "tv_current_run_zone" and kwargs.get("text") == "当前跑区：测试跑区"
+                    )
+                )
+
+                def click():
+                    self.bridge.clicks.append(name)
+                    self.bridge.phase, self.bridge.focus = "rules", BEFORE
+
+                node.click = click
+            elif name == "tv_enterRun":
+
+                def entry():
+                    self.bridge.clicks.append(name)
+                    self.bridge.phase, self.bridge.focus = "safety", MAIN
+
+                node.click = entry
+            return node
+
+    bridge = Bridge()
+    assert (
+        enter_formal_zero(
+            bridge,
+            lambda: True,
+            ui_factory=SafetyUI,
+            sleep=lambda _: None,
+            expected_zone="当前跑区：测试跑区",
+        )
+        == 1
+    )
+    assert bridge.clicks == ["tv_run", "tv_enterRun", "tv_sure", "tv_cancle"]
+    with pytest.raises(ValueError, match="跑区未核对"):
+        enter_formal_zero(
+            Bridge(),
+            lambda: True,
+            ui_factory=SafetyUI,
+            sleep=lambda _: None,
+            expected_zone="当前跑区：其他跑区",
+        )

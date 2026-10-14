@@ -38,6 +38,7 @@ class RuntimeSettings(StrictModel):
     start_template: Path
     maximum_s: int = Field(default=900, ge=30, le=900)
     normal_save_authorized: bool = False
+    run_zone_label: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 def verify_motion_evidence(root: Path, path: Path, clip) -> bool:
@@ -231,7 +232,9 @@ class LiveRuntime:
             runner.start_stamp = datetime.strptime(
                 bridge.run("shell", "date", "+%F_%H:%M").strip(), "%Y-%m-%d_%H:%M"
             )
-            runner.grade_before = enter_formal_zero(bridge, authorize)
+            runner.grade_before = enter_formal_zero(
+                bridge, authorize, expected_zone=self.settings.run_zone_label
+            )
 
         runner.prepare_start = prepare_start
         return runner
