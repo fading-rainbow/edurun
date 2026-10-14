@@ -29,6 +29,11 @@ def dismiss_known_ad(bridge, ui=None, *, authorize=lambda: True):
     ):
         raise ValueError("广告所属版本未核实")
     ui = ui or AppUI(bridge)
+    close = ui.device(resourceId=KNOWN_AD_COMPONENT[0] + ":id/iv_close")
+    container = ui.device(
+        resourceId=KNOWN_AD_COMPONENT[0] + ":id/yd_saas_interstitial_ad_container"
+    )
+    can_close = close.count == 1 and container.count == 1
     bridge.check_device()
     if (
         authorize() is not True
@@ -36,6 +41,9 @@ def dismiss_known_ad(bridge, ui=None, *, authorize=lambda: True):
         != KNOWN_AD_COMPONENT
     ):
         raise ValueError("广告返回前许可或前台改变")
+    if can_close:
+        close.click()
+        return "known_ad_close_sent_wait_for_observation"
     ui.device.press("back")
     return "known_ad_back_sent_wait_for_observation"
 
