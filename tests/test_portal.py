@@ -265,7 +265,13 @@ def test_slow_grade_or_interstitial_waits_without_second_tab_or_start(monkeypatc
     assert bridge.clicks == ["tv_run", "tv_enterRun", "tv_cancle"]
 
 
-def test_safety_entry_is_single_and_requires_exact_zone(monkeypatch):
+@pytest.mark.parametrize("interstitial", [False, True])
+@pytest.mark.parametrize("delayed_transition", [False, True])
+def test_safety_entry_is_single_and_requires_exact_zone(
+    monkeypatch, interstitial, delayed_transition
+):
+    from test_ad_recovery import OPAQUE
+
     monkeypatch.setattr(
         "budao.portal.parse_run_metrics",
         lambda _: {
@@ -290,26 +296,48 @@ def test_safety_entry_is_single_and_requires_exact_zone(monkeypatch):
 
                 def click():
                     self.bridge.clicks.append(name)
-                    self.bridge.phase, self.bridge.focus = "rules", BEFORE
+                    self.bridge.phase, self.bridge.focus = (
+                        ("pending_run", MAIN) if delayed_transition else ("rules", BEFORE)
+                    )
 
                 node.click = click
             elif name == "tv_enterRun":
 
                 def entry():
                     self.bridge.clicks.append(name)
-                    self.bridge.phase, self.bridge.focus = "safety", MAIN
+                    self.bridge.phase, self.bridge.focus = (
+                        "ad" if interstitial else "safety",
+                        MAIN,
+                    )
 
                 node.click = entry
             return node
 
+        def dump_hierarchy(self):
+            return OPAQUE if self.bridge.phase == "ad" else super().dump_hierarchy()
+
     bridge = Bridge()
+    delayed_frames = [0]
+
+    def sleep(_):
+        if bridge.phase == "pending_run":
+            delayed_frames[0] += 1
+            if delayed_frames[0] >= 2:
+                bridge.phase, bridge.focus = "rules", BEFORE
+
+    def close_ad(current_bridge, *_):
+        current_bridge.phase, current_bridge.focus = "safety", MAIN
+        return False
+
+    scene = SimpleNamespace(opaque_overlay=lambda tree: tree == OPAQUE, close_ad=close_ad)
     assert (
         enter_formal_zero(
             bridge,
             lambda: True,
             ui_factory=SafetyUI,
-            sleep=lambda _: None,
+            sleep=sleep,
             expected_zone="当前跑区：测试跑区",
+            scene_helper=scene,
         )
         == 1
     )
@@ -321,6 +349,7 @@ def test_safety_entry_is_single_and_requires_exact_zone(monkeypatch):
             ui_factory=SafetyUI,
             sleep=lambda _: None,
             expected_zone="当前跑区：其他跑区",
+            scene_helper=scene,
         )
 
 

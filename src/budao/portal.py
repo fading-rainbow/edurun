@@ -197,6 +197,8 @@ def enter_formal_zero(
                     raise ValueError("安全提示的本次跑区未核对，不进入")
                 click("tv_sure", "进入乐跑", current)
                 safety_confirmed = True
+                ad_interrupted_entry = False
+                returned_home_grades.clear()
             elif not run_selected:
                 click("tv_run", "乐跑", current)
                 run_selected = True
@@ -250,6 +252,8 @@ def enter_formal_zero(
                     entered = True
                     entry_attempts += 1
         else:
+            ad_interrupted_entry = False
+            returned_home_grades.clear()
             # 不自动确认恢复、放弃记录、权限更改或身份验证提示。
             title = ui.device(resourceId=TARGET + ":id/tv_title", text="当前跑区合格标准")
             if title.count == 1:
