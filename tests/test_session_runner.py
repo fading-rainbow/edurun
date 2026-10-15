@@ -97,8 +97,9 @@ class Connector(StartConnector):
         button = SimpleNamespace(count=1, long_click=lambda **_: setattr(self, "paused", True))
         self.ui = SimpleNamespace(device=lambda **_: button)
 
-    def begin_once(self, request, authorize):
+    def begin_once(self, request, authorize, **kwargs):
         assert authorize() is True
+        assert kwargs["gps_position"] == GeoPoint(lon=120, lat=30)
         self.calls.append("begin")
         self.last_action_request = request
         if self.start_failure:
@@ -220,6 +221,32 @@ def test_missing_fresh_same_position_gps_cannot_click_start_or_open_injection(tm
     r.sleep = lambda _: None
     result = r.run(lambda: True, lambda _: None)
     assert result["state"] == "error" and not result["start_action_attempted"]
+    assert "begin" not in c.calls and not any("data_injection" in call for call in b.calls)
+
+
+def test_callback_reception_while_ui_weak_waits_without_beginning(tmp_path, monkeypatch):
+    r, b, c, _d, _m = setup(tmp_path)
+    capture = c.capture
+    r.sleep = lambda _: None
+
+    def weak(**kwargs):
+        cap = capture(**kwargs)
+        return RunCapture(
+            cap.frame.model_copy(
+                update={
+                    "inspection": cap.frame.inspection.model_copy(update={"gps_label": "GPS信号弱"})
+                }
+            ),
+            cap.hierarchy,
+            cap.screenshot,
+            cap.android_observed_ns,
+            cap.motion_snapshot,
+        )
+
+    monkeypatch.setattr(c, "capture", weak)
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "error" and not result["start_action_attempted"]
+    assert result["message"] == "定位就绪等待超时；未点击开始，未提交记录"
     assert "begin" not in c.calls and not any("data_injection" in call for call in b.calls)
 
 

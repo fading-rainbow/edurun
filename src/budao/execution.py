@@ -105,6 +105,15 @@ class ExecutionCoordinator:
             or type(value.get("records_submitted")) is not int
         ):
             raise ValueError("运行状态结构未知")
+        if not public["run_started"]:
+            if state == "preparing" and value.get("preparation_phase") == "gps_readiness":
+                public["message"] = "正在等待原App定位就绪与本任务同位置实收；尚未点击开始"
+            elif (
+                state == "error"
+                and value.get("preparation_phase") == "gps_timeout"
+                and value.get("start_action_attempted") is False
+            ):
+                public["message"] = "定位就绪等待超时；未点击开始，未提交记录"
         proof = value.get("finish_evidence")
         if state in {"accepted", "submitted_unconfirmed"}:
             if (

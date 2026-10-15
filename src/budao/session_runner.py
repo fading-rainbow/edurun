@@ -14,7 +14,7 @@ from .gps_reception import received_gps_matches
 from .raw_motion import RecordedProbeClip
 from .runtime import RuntimeDispatcher
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
-from .start_connector import StartConnector
+from .start_connector import GPSReadinessTimeout, StartConnector
 from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, TargetInspection
 from .ui import KNOWN_AD_COMPONENT, dismiss_known_ad, focused_component
 
@@ -152,12 +152,17 @@ class SessionRunner:
                 self.prepare_start(lambda: not cancel.is_set() and authorize() is True)
             self.motion.prepare(self.clip)
             self.motion.preload(self.clip)
+            report.update(
+                message="正在等待原App定位就绪与本任务同位置实收；尚未点击开始",
+                preparation_phase="gps_readiness",
+            )
+            publish(dict(report))
             gps_deadline = self.clock() + 10
             while self.resume_start is None and not cancel.is_set() and self.clock() < gps_deadline:
                 if self.refresh_gps is not None:
                     self.refresh_gps(lambda: not cancel.is_set() and authorize() is True)
                 cap = self.connector.capture(motion_request=self.motion.request)
-                if received_gps_matches(
+                if cap.frame.inspection.gps_label == GPS_READY_LABEL and received_gps_matches(
                     cap.motion_snapshot,
                     self.motion.request,
                     cap.android_observed_ns,
@@ -169,11 +174,21 @@ class SessionRunner:
                 if self.resume_start is not None:
                     pass  # Current received position is checked by the recovery factory.
                 else:
-                    raise ValueError("开始前未接收当前同位置GPS；不瞬移、不点击")
+                    raise GPSReadinessTimeout("开始前定位就绪与当前同位置接收未同时确认；不点击")
             start = self.resume_start or self.connector.begin_once
             witness = start(
-                self.motion.request, lambda: not cancel.is_set() and authorize() is True
+                self.motion.request,
+                lambda: not cancel.is_set() and authorize() is True,
+                **(
+                    {
+                        "gps_position": self.dispatcher.worker.engine.position,
+                        "refresh_gps": self.refresh_gps,
+                    }
+                    if self.resume_start is None
+                    else {}
+                ),
             )
+            report.pop("preparation_phase", None)
             report["run_started"] = True
             self.started = True
             report.update(state="starting", message="原App新开始已确认，正在连接有界输入")
@@ -321,9 +336,16 @@ class SessionRunner:
                 report.update(state="paused", message="收到停止请求或达到有界运行时限")
         except Exception as error:
             self.private_failure = {"type": type(error).__name__, "detail": str(error)}
+            report.pop("preparation_phase", None)
+            if isinstance(error, GPSReadinessTimeout):
+                report["preparation_phase"] = "gps_timeout"
             report.update(
                 state="paused" if cancel.is_set() else "error",
-                message="单次编排中断；不重复开始，不回显私有异常",
+                message=(
+                    "定位就绪等待超时；未点击开始，未提交记录"
+                    if isinstance(error, GPSReadinessTimeout)
+                    else "单次编排中断；不重复开始，不回显私有异常"
+                ),
             )
         finally:
             try:

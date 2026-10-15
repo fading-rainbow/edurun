@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from PIL import Image
 
 from .foreground_motion import ForegroundMotionClient
+from .gps_reception import received_gps_matches
 from .models import GeoPoint
 from .mumu import MuMuBridge
 from .runtime import CapturedRunFrame, StartWitness
@@ -34,6 +35,10 @@ CAPTURE_MOTION_TAIL = (
     "echo __EDURUN_MOTION__; run-as com.edurun.diagnostic cat files/motion-service.json; "
     "echo __EDURUN_AFTER_CLOCK__; cat /proc/uptime"
 )
+
+
+class GPSReadinessTimeout(ValueError):
+    """固定就绪失败类型；不能把设备/账号异常原文发回公共报告。"""
 
 
 @dataclass(frozen=True)
@@ -202,13 +207,66 @@ class StartConnector:
             motion,
         )
 
-    def begin_once(self, request_id: str, authorize: Callable[[], bool]) -> StartWitness:
+    def prepare_begin(
+        self,
+        request_id: str,
+        authorize: Callable[[], bool],
+        *,
+        gps_position: GeoPoint | None = None,
+        refresh_gps: Callable | None = None,
+    ) -> RunCapture:
+        """只等待真实零状态和定位就绪，不消费开始请求、不点击或输出运动。"""
+        if (
+            not re.fullmatch(r"[a-f0-9]{32}", request_id)
+            or not callable(authorize)
+            or (gps_position is not None and not isinstance(gps_position, GeoPoint))
+            or (refresh_gps is not None and (gps_position is None or not callable(refresh_gps)))
+        ):
+            raise ValueError("开始准备需要明确任务、同位置和许可")
+        deadline = self.clock() + 10
+        while self.clock() < deadline:
+            if authorize() is not True:
+                raise ValueError("本次运行准备条件/用户开始动作尚未确认")
+            if refresh_gps is not None:
+                refresh_gps(lambda: self.clock() < deadline and authorize() is True)
+            before = self.capture(
+                pixels=True, **({"motion_request": request_id} if gps_position is not None else {})
+            )
+            v = before.frame.inspection
+            if (
+                len(v.checkpoint_cards) != 1
+                or v.checkpoint_cards[0].state != "pending"
+                or not self.template.matches(v, before.screenshot, before.hierarchy)
+            ):
+                raise ValueError("当前不是已核对的正式零状态/开始按钮；未点击")
+            received = gps_position is None or received_gps_matches(
+                before.motion_snapshot, request_id, before.android_observed_ns, gps_position
+            )
+            if v.gps_label == GPS_READY_LABEL and received:
+                if self.clock() >= deadline or authorize() is not True:
+                    raise ValueError("开始准备观察或许可已经过期；未点击")
+                return before
+            if v.gps_label not in {GPS_READY_LABEL, "GPS信号弱"}:
+                raise ValueError("当前定位状态未知；未点击")
+            self.sleep(0.2)
+        raise GPSReadinessTimeout("开始前GPS就绪与新任务实收未同时确认；未点击")
+
+    def begin_once(
+        self,
+        request_id: str,
+        authorize: Callable[[], bool],
+        *,
+        gps_position: GeoPoint | None = None,
+        refresh_gps: Callable | None = None,
+    ) -> StartWitness:
         if not re.fullmatch(r"[a-f0-9]{32}", request_id) or request_id in self.used_requests:
             raise ValueError("开始请求无效或已经消费；不自动重复点击/接管旧会话")
         self.used_requests.add(request_id)
         if not callable(authorize) or authorize() is not True:
             raise ValueError("本次运行准备条件/用户开始动作尚未确认")
-        before = self.capture(pixels=True)
+        before = self.prepare_begin(
+            request_id, authorize, gps_position=gps_position, refresh_gps=refresh_gps
+        )
         v = before.frame.inspection
         if (
             v.gps_label != GPS_READY_LABEL
@@ -240,7 +298,11 @@ class StartConnector:
             view = frame.inspection
             if "human_face_verification_required" in view.issues:
                 raise ValueError("开始后需要本人验证；未授权移动或上传")
-            if view.run_control_state != "running" or not view.elapsed_s:
+            if (
+                view.run_control_state != "running"
+                or not view.elapsed_s
+                or view.gps_label != GPS_READY_LABEL
+            ):
                 continue
             if first is None:
                 first = frame

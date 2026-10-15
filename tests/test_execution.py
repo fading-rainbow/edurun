@@ -165,6 +165,38 @@ def test_runner_error_also_clears_preparation_ready_not_just_factory_error():
     assert c.status()["ready"] is False
 
 
+@pytest.mark.parametrize(
+    "state,phase,started,attempted,specific",
+    [
+        ("preparing", "gps_readiness", False, False, True),
+        ("error", "gps_timeout", False, False, True),
+        ("error", "gps_timeout", True, False, False),
+        ("error", "gps_timeout", False, True, False),
+        ("error", "gps_timeout", False, None, False),
+        ("error", "PRIVATE_SENSITIVE", False, False, False),
+        ("running", "gps_readiness", False, False, False),
+    ],
+)
+def test_gps_progress_only_allows_fixed_text_and_truthful_unstarted_state(
+    state, phase, started, attempted, specific
+):
+    c = ExecutionCoordinator(Preparation())
+    c._publish_runner(
+        {
+            "state": state,
+            "preparation_phase": phase,
+            "run_started": started,
+            "records_submitted": 0,
+            "record_valid_proven": False,
+            "message": "PRIVATE_SENSITIVE",
+            **({"start_action_attempted": attempted} if attempted is not None else {}),
+        }
+    )
+    result = c.status()
+    assert ("定位就绪" in result["message"]) is specific
+    assert "PRIVATE_SENSITIVE" not in str(result) and "preparation_phase" not in result
+
+
 @pytest.mark.parametrize("change", [{"ready": 1}, {"records_submitted": True}, {"checks": []}])
 def test_eligible_preparation_requires_exact_booleans_and_all_distinct_gates(change):
     result = Preparation().check(True)
