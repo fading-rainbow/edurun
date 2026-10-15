@@ -147,6 +147,7 @@ def prepare_current_login(
     ui_factory: Callable = AppUI,
     clock: Callable = time.monotonic,
     sleep: Callable = time.sleep,
+    scene_helper=None,
 ) -> dict:
     """只正常打开客户端/关闭已知广告/切我的；旧运行页或受保护认证页不被导航覆盖。"""
     if not isinstance(bridge, MuMuBridge):
@@ -179,6 +180,7 @@ def prepare_current_login(
     deadline = clock() + 30
     ui = None
     selected = False
+    ad_attempts, last_close = 0, None
     try:
         while clock() < deadline:
             focus = focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
@@ -225,6 +227,29 @@ def prepare_current_login(
                 sleep(0.3)
                 continue
             if mine.count != 1:
+                # 现场出现的不透明全屏广告：没有任何目标App资源ID。仅在显式提供助手时，
+                # 最多两次建议、两次点击间隔≥3秒，不重复启动或点击；任何失败都按通用未确认返回。
+                if (
+                    scene_helper is not None
+                    and ad_attempts < 2
+                    and callable(getattr(scene_helper, "close_ad", None))
+                    and scene_helper.opaque_overlay(ui.device.dump_hierarchy())
+                ):
+                    if last_close is not None and clock() - last_close < 3:
+                        sleep(0.3)
+                        continue
+                    ad_attempts += 1
+                    began = clock()
+                    try:
+                        sent = scene_helper.close_ad(bridge, ui, lambda: True)
+                    except Exception:
+                        return result
+                    deadline += min(30, clock() - began)
+                    if sent is not True:
+                        return result
+                    last_close = clock()
+                    sleep(0.3)
+                    continue
                 return result
             bridge.check_device()
             if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != focus:

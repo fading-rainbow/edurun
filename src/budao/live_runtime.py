@@ -272,7 +272,21 @@ class LiveRuntime:
 
     def prepare_login(self, bridge):
         if self.settings.resume_evidence is None:
-            return prepare_current_login(bridge)
+            scene = None
+            try:
+                if self.settings.vision_config is not None:
+                    from .ui_advisor import SceneAssistant, UIAdvisor
+
+                    try:
+                        scene = SceneAssistant(
+                            UIAdvisor.from_private_config(self.root, self.settings.vision_config)
+                        )
+                    except (ValueError, OSError):
+                        scene = None  # 可选助手不可用；不改变原有登录准备，也不回显配置
+                return prepare_current_login(bridge, scene_helper=scene)
+            finally:
+                if scene is not None:
+                    scene.client.close()
         try:
             directory, original, saved, stamp, _ = self._resume_ticket(bridge)
         except ValueError as error:

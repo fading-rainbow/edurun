@@ -33,6 +33,24 @@ def test_redaction_covers_system_bar_and_identity_and_refuses_password():
         redacted_ui_image(image, '<hierarchy><node password="true"/></hierarchy>')
 
 
+def test_post_screenshot_notification_is_also_masked_and_verification_refused():
+    after = (
+        '<hierarchy><node package="com.android.systemui" '
+        'resource-id="com.android.systemui:id/heads_up_container" '
+        'bounds="[10,80][600,280]"/></hierarchy>'
+    )
+    image = Image.new("RGB", (720, 1280), "white")
+    result = Image.open(io.BytesIO(redacted_ui_image(image, "<hierarchy/>", after_hierarchy=after)))
+    assert result.getpixel((50, 150)) == (0, 0, 0)
+    assert result.getpixel((650, 500)) == (255, 255, 255)
+    with pytest.raises(ValueError):
+        redacted_ui_image(
+            image,
+            "<hierarchy/>",
+            after_hierarchy='<hierarchy><node text="人脸验证"/></hierarchy>',
+        )
+
+
 def test_advice_cannot_contain_command_geo_or_save_action():
     for extra in ({"action": "save"}, {"command": "adb shell"}, {"lon": 120}):
         with pytest.raises(ValueError):

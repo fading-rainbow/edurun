@@ -74,6 +74,7 @@ def enter_formal_zero(
     safety_confirmed = False
     advised = False
     restored = False
+    ad_attempts, last_close = 0, None
     while clock() < deadline and authorize() is True:
         current = focus()
         if current is None or current == (TARGET, SPLASH):
@@ -95,6 +96,28 @@ def enter_formal_zero(
                 if focus() != current or authorize() is not True:
                     raise ValueError("广告关闭许可改变")
                 close.click()
+            elif (
+                scene_helper is not None
+                and ad_attempts < 2
+                and callable(getattr(scene_helper, "close_ad", None))
+                and scene_helper.opaque_overlay(tree)
+            ):
+                # 不透明全屏广告没有任何目标App资源ID；最多两次建议，两次点击间隔≥3秒。
+                if last_close is not None and clock() - last_close < 3:
+                    sleep(0.2)
+                    continue
+                ad_attempts += 1
+                began = clock()
+                try:
+                    sent = scene_helper.close_ad(bridge, ui, authorize)
+                except RuntimeError:
+                    raise ValueError("广告关闭建议不可用；不继续入口") from None
+                if sent is not True:
+                    raise ValueError("广告关闭未获本地确认；不继续入口")
+                deadline += min(30, clock() - began)
+                last_close = clock()
+                sleep(0.2)
+                continue
             elif pause_expected is not None and field(tree, "dialog_confirm") == "恢复":
                 content = field(tree, "alert_dialog_content")
                 match = re.fullmatch(

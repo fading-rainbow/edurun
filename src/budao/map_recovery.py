@@ -163,7 +163,14 @@ class MapRecovery:
         cap = c.capture(pixels=True)
         if cap.frame.inspection != view:
             raise ValueError("缩放后原始记录或卡片改变")
-        image = Image.open(io.BytesIO(redacted_ui_image(cap.screenshot, cap.hierarchy)))
+        after = c.capture()
+        if after.frame.inspection != view:
+            raise ValueError("截图期间原记录或卡片改变，不发送")
+        image = Image.open(
+            io.BytesIO(
+                redacted_ui_image(cap.screenshot, cap.hierarchy, after_hierarchy=after.hierarchy)
+            )
+        )
         png = crop_image(image, CROP)
         cropped = Image.open(io.BytesIO(png)).convert("RGB")
         enlarged = cropped.resize((1440, 1132))
@@ -193,8 +200,18 @@ class MapRecovery:
         latest = c.capture(pixels=True)
         if authorize() is not True or latest.frame.inspection != view:
             raise ValueError("慢模型返回后原记录或许可改变")
+        after = c.capture()
+        if after.frame.inspection != view:
+            raise ValueError("最后截图期间原记录或卡片改变")
         fresh_png = crop_image(
-            Image.open(io.BytesIO(redacted_ui_image(latest.screenshot, latest.hierarchy))), CROP
+            Image.open(
+                io.BytesIO(
+                    redacted_ui_image(
+                        latest.screenshot, latest.hierarchy, after_hierarchy=after.hierarchy
+                    )
+                )
+            ),
+            CROP,
         )
         fresh = np.asarray(Image.open(io.BytesIO(fresh_png)).convert("RGB"), dtype=float)
         if np.sqrt(np.mean((fresh - np.asarray(cropped, dtype=float)) ** 2)) > 3:

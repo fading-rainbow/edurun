@@ -5,16 +5,20 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import re
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
 import httpx
+import numpy as np
 from PIL import Image, ImageDraw
 from pydantic import Field, model_validator
 
+from .auth_ui import MAIN
 from .models import PixelPoint, StrictModel
 from .mumu import MuMuBridge
 from .profiles import private_file
@@ -115,7 +119,9 @@ def _systemui_masks(root, image: Image.Image) -> list[tuple[int, int, int, int]]
     return boxes
 
 
-def redacted_ui_image(image: Image.Image, hierarchy: str) -> bytes:
+def redacted_ui_image(
+    image: Image.Image, hierarchy: str, *, after_hierarchy: str | None = None
+) -> bytes:
     if (
         len(hierarchy) > 2 * 1024 * 1024
         or "<!DOCTYPE" in hierarchy.upper()
@@ -177,6 +183,10 @@ def redacted_ui_image(image: Image.Image, hierarchy: str) -> bytes:
         if not 0 <= left <= right <= result.width or not 0 <= top <= bottom <= result.height:
             raise ValueError("敏感控件越界，不发送")
         draw.rectangle((left, top, right, bottom), fill="black")
+    # A notification can arrive between hierarchy sampling and the screenshot.
+    # Apply both observations; neither may authorize sending a protected page.
+    if after_hierarchy is not None:
+        return redacted_ui_image(result, after_hierarchy)
     out = io.BytesIO()
     result.save(out, format="PNG")
     return out.getvalue()
@@ -261,6 +271,152 @@ class UIAdvisor(VisionClient):
         return advice
 
 
+def opaque_overlay_tree(hierarchy: str) -> bool:
+    """只识别4.3.0首页上的不透明全屏广告：仅有android内容壳/SystemUI，没有任何目标App资源ID。"""
+    if (
+        not isinstance(hierarchy, str)
+        or len(hierarchy) > 2 * 1024 * 1024
+        or "<!DOCTYPE" in hierarchy.upper()
+        or "<!ENTITY" in hierarchy.upper()
+    ):
+        return False
+    try:
+        nodes = list(ET.fromstring(hierarchy).iter("node"))
+    except ET.ParseError:
+        return False
+    if not any(n.get("resource-id") == "android:id/content" for n in nodes):
+        return False
+    for node in nodes:
+        if (
+            node.get("password") == "true"
+            or node.get("package", "") not in {TARGET, SYSTEMUI, "android"}
+            or node.get("resource-id", "").startswith(TARGET + ":id/")
+            or any(
+                label in node.get("text", "") + node.get("content-desc", "")
+                for label in _VERIFICATION_LABELS
+            )
+        ):
+            return False
+    return True
+
+
+# 现场采集的关闭样式：约38px深色圆形、细边，中央约18px白色对角X。
+_GLYPH_RADII = tuple(range(16, 24))
+_GLYPH_TOLERANCE = 5
+_GLYPH_MASKS: dict[int, SimpleNamespace] = {}
+
+
+def _glyph_masks(radius: int) -> SimpleNamespace:
+    cached = _GLYPH_MASKS.get(radius)
+    if cached is not None:
+        return cached
+    half = math.ceil(1.45 * radius) + 1
+    dy, dx = np.mgrid[-half : half + 1, -half : half + 1].astype(np.float32)
+    dist = np.hypot(dx, dy)
+    d1 = np.abs(dx - dy) / math.sqrt(2)
+    d2 = np.abs(dx + dy) / math.sqrt(2)
+    arms = (dist <= 0.7 * radius) & (dist >= 0.2 * radius)
+    angles = [2 * math.pi * k / 16 for k in range(16)]
+
+    def rays():
+        steps = np.arange(0.9 * radius, 1.5 * radius + 0.01, 0.5)
+        ys = half + np.rint(steps[:, None] * np.sin(angles)[None, :]).astype(int)
+        xs = half + np.rint(steps[:, None] * np.cos(angles)[None, :]).astype(int)
+        return steps, np.clip(ys, 0, 2 * half), np.clip(xs, 0, 2 * half)
+
+    masks = SimpleNamespace(
+        half=half,
+        dx=dx,
+        dy=dy,
+        annulus=(dist >= 0.78 * radius) & (dist <= 0.9 * radius),
+        off=(dist <= 0.85 * radius) & (np.minimum(d1, d2) >= 4.0),
+        core=dist <= 0.7 * radius,
+        zones=[
+            arms & (d1 <= 1.0),
+            arms & (d2 <= 1.0),
+            *(
+                arms & (np.minimum(d1, d2) <= 1.0) & (sx * dx > 0) & (sy * dy > 0)
+                for sx in (-1, 1)
+                for sy in (-1, 1)
+            ),
+        ],
+        rays=rays(),
+        disk=dist <= radius,
+    )
+    _GLYPH_MASKS[radius] = masks
+    return masks
+
+
+def _glyph_score(gray, cx: int, cy: int, radius: int) -> float | None:
+    """返回候选的不对称度（越小越居中）；不是深色圆形X关闭键则返回None。"""
+    masks = _glyph_masks(radius)
+    half = masks.half
+    if cx - half < 0 or cy - half < 0 or cx + half >= gray.shape[1] or cy + half >= gray.shape[0]:
+        return None
+    win = gray[cy - half : cy + half + 1, cx - half : cx + half + 1]
+    ring = win[masks.annulus]
+    reference = float(np.median(ring))
+    if reference > 120 or np.mean(np.abs(ring - reference) <= 40) < 0.85:
+        return None  # 不是深色圆盘
+    if np.mean(np.abs(win[masks.off] - reference) <= 45) < 0.9:
+        return None  # 圆盘内除X外含有文字/按钮/图案
+    bright = (win >= 150) & (win > reference + 70)
+    if any(np.mean(bright[zone]) < 0.55 for zone in masks.zones):
+        return None  # 缺少完整的两条对角线或四个臂
+    # 圆形：沿16条射线测量盘面边缘的实际距离。圆形各方向一致；方形/矩形按钮沿对角线约√2倍。
+    steps, ys, xs = masks.rays
+    edge = np.abs(win[ys, xs] - reference) >= 25
+    if not edge.any(axis=0).all():
+        return None  # 某方向没有可测边缘（背景与盘面无区别）
+    distance = steps[edge.argmax(axis=0)]
+    spread = float(distance.max() - distance.min())
+    offset = abs(float(np.median(distance)) - radius)
+    if spread > 3 or offset > 2.5:
+        return None
+    asymmetry = float(np.abs(distance[:8] - distance[8:]).sum())
+    core = bright & masks.core
+    weight = float(core.sum())
+    if weight <= 0:
+        return None
+    shift = abs(float((masks.dx * core).sum()) / weight) + abs(
+        float((masks.dy * core).sum()) / weight
+    )
+    return 0.5 * asymmetry + 0.5 * spread + 0.25 * offset + 4 * shift
+
+
+def verify_close_glyph(image: Image.Image, x: float, y: float, tolerance: int = _GLYPH_TOLERANCE):
+    """在建议像素附近有限容差内核实圆形X关闭图形；返回最居中的(cx, cy, radius)或None。"""
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    px, py = round(x), round(y)
+    best = None
+    for i in range(-tolerance, tolerance + 1):
+        for j in range(-tolerance, tolerance + 1):
+            cx, cy = px + i, py + j
+            if not (0 <= cx < gray.shape[1] and 0 <= cy < gray.shape[0]) or gray[cy, cx] < 150:
+                continue  # X的交点必须是亮色
+            for radius in _GLYPH_RADII:
+                score = _glyph_score(gray, cx, cy, radius)
+                if score is None:
+                    continue
+                key = (round(score, 3), i * i + j * j, radius)
+                if best is None or key < best[0]:
+                    best = (key, (cx, cy, radius))
+    return None if best is None else best[1]
+
+
+def close_patch_stable(before: Image.Image, after: Image.Image, glyph) -> bool:
+    cx, cy, radius = glyph
+    box = (cx - radius, cy - radius, cx + radius + 1, cy + radius + 1)
+    a = np.asarray(before.convert("L").crop(box), dtype=np.float32)
+    b = np.asarray(after.convert("L").crop(box), dtype=np.float32)
+    if a.shape != b.shape or a.shape[0] != 2 * radius + 1:
+        return False
+    disk = _glyph_masks(radius).disk
+    half = _glyph_masks(radius).half
+    disk = disk[half - radius : half + radius + 1, half - radius : half + radius + 1]
+    return float(np.mean(np.abs(a - b)[disk])) <= 12
+
+
 class SceneAssistant:
     """慢模型调用只发生在未开始的页面；执行前重新核对，只打开已采集的规则控件。"""
 
@@ -268,6 +424,9 @@ class SceneAssistant:
         if not isinstance(client, UIAdvisor):
             raise ValueError("界面助手需要本机配置的多模态客户端")
         self.client, self.calls = client, 0
+        self.clock, self.sleep = time.monotonic, time.sleep
+
+    opaque_overlay = staticmethod(opaque_overlay_tree)
 
     @staticmethod
     def _zero(tree):
@@ -302,7 +461,14 @@ class SceneAssistant:
         tree = ui.device.dump_hierarchy()
         if not self._zero(tree):
             raise ValueError("本人验证或非零记录不发送图片")
-        png = redacted_ui_image(ui.screenshot(), tree)
+        image = ui.screenshot()
+        after = ui.device.dump_hierarchy()
+        if (
+            not self._zero(after)
+            or focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != expected
+        ):
+            raise ValueError("截图期间页面改变，不发送")
+        png = redacted_ui_image(image, tree, after_hierarchy=after)
         self.calls += 1
         advice = self.client.advise(png)
         if advice.action != "open_rules" or advice.confidence < 0.8 or advice.target is None:
@@ -332,3 +498,86 @@ class SceneAssistant:
             raise ValueError("规则点击前许可或前台改变")
         button.click()
         return True  # 只表示已发送打开动作；实际规则仍由下一帧独立解析。
+
+    def close_ad(self, bridge, ui, authorize):
+        """未开始的MainActivity上不透明广告：仅在本地核实圆形X后点击一次。
+
+        返回True只表示已发送一次关闭；不表示成功、成绩或登录。非建议/无效图形返回False且不点击。
+        """
+        if not isinstance(bridge, MuMuBridge) or self.calls >= 8:
+            raise ValueError("界面建议仅限独立模拟器及有界调用次数")
+        expected = (TARGET, MAIN)
+
+        def guard():
+            bridge.check_device()
+            if (
+                authorize() is not True
+                or focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
+                != expected
+            ):
+                raise ValueError("广告关闭前许可或前台改变")
+
+        bridge.check_device()
+        meta = bridge.run("shell", "dumpsys", "package", TARGET)
+        if not re.search(r"^\s*versionName=4\.3\.0\s*$", meta, re.M) or not re.search(
+            r"^\s*versionCode=230\b", meta, re.M
+        ):
+            raise ValueError("当前目标版本未核实，不发送界面")
+        guard()
+        tree = ui.device.dump_hierarchy()
+        if not opaque_overlay_tree(tree):
+            return False  # 有正常目标控件、对话框或验证内容：不属于本助手
+        first = ui.screenshot()
+        after = ui.device.dump_hierarchy()
+        guard()
+        if not opaque_overlay_tree(after):
+            raise ValueError("截图期间广告已变化，不发送")
+        png = redacted_ui_image(first, tree, after_hierarchy=after)
+        first = Image.open(io.BytesIO(png)).convert("RGB")
+        self.calls += 1
+        advice = self.client.advise(png)
+        if (
+            advice.screen != "ad"
+            or advice.action != "close_ad"
+            or advice.confidence < 0.9
+            or advice.target is None
+            or not 0 <= advice.target.x < first.width
+            or not 0 <= advice.target.y < first.height
+        ):
+            return False
+        glyph = verify_close_glyph(first, advice.target.x, advice.target.y)
+        if glyph is None:
+            return False  # 不信任模型文字或坐标；没有实际圆形X就不点击
+        # 慢模型返回后必须重新核对前台、界面树隐私和新帧，不使用旧像素。
+        guard()
+        fresh = ui.device.dump_hierarchy()
+        if not opaque_overlay_tree(fresh):
+            raise ValueError("模型返回时广告已变化")
+        frame = ui.screenshot()
+        after = ui.device.dump_hierarchy()
+        guard()
+        if not opaque_overlay_tree(after):
+            raise ValueError("新帧期间广告已变化")
+        frame = Image.open(
+            io.BytesIO(redacted_ui_image(frame, fresh, after_hierarchy=after))
+        ).convert("RGB")
+        moved = verify_close_glyph(frame, glyph[0], glyph[1], tolerance=2)
+        if moved is None:
+            raise ValueError("新帧未再次核实关闭图形")
+        self.sleep(0.15)
+        latest = ui.screenshot()
+        after = ui.device.dump_hierarchy()
+        if not opaque_overlay_tree(after):
+            raise ValueError("最后截图期间广告已变化")
+        latest = Image.open(io.BytesIO(redacted_ui_image(latest, after))).convert("RGB")
+        sampled = self.clock()
+        stable = verify_close_glyph(latest, moved[0], moved[1], tolerance=1)
+        if stable is None or not close_patch_stable(frame, latest, stable):
+            raise ValueError("关闭图形不稳定，不点击")
+        if not opaque_overlay_tree(ui.device.dump_hierarchy()):
+            raise ValueError("点击前广告已变化")
+        guard()
+        if self.clock() - sampled > 2:
+            raise ValueError("关闭图形采样过期")
+        ui.device.click(stable[0], stable[1])
+        return True
