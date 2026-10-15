@@ -246,7 +246,9 @@ def prepare_current_login(
                         return result
                     deadline += min(30, clock() - began)
                     if sent is not True:
-                        return result
+                        last_close = clock()
+                        sleep(0.3)
+                        continue  # 没有点击；让过渡广告自行消失或在有界预算内重新观察。
                     last_close = clock()
                     sleep(0.3)
                     continue

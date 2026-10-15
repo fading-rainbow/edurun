@@ -53,7 +53,10 @@ def refresh_initial_position(connector, initial: GeoPoint, authorize):
     view = cap.frame.inspection
     if (
         view.state != "metrics"
-        or any(i != "start_controls_and_current_record_identity_unverified" for i in view.issues)
+        or any(
+            i not in {"start_controls_and_current_record_identity_unverified", "gps_searching"}
+            for i in view.issues
+        )
         or view.run_control_state != "not_started_or_countdown"
         or view.counter_label != "已打卡"
         or view.distance_m != 0
@@ -62,7 +65,9 @@ def refresh_initial_position(connector, initial: GeoPoint, authorize):
         or len(view.checkpoint_cards) != 1
         or view.checkpoint_cards[0].state != "pending"
         or cap.screenshot is None
-        or not connector.template.matches(view, cap.screenshot, cap.hierarchy)
+        or not connector.template.matches(
+            view, cap.screenshot, cap.hierarchy, allow_gps_searching=True
+        )
     ):
         raise ValueError("起点设置只允许本次已核实规则的正式零状态")
 

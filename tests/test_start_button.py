@@ -42,6 +42,30 @@ def test_start_button_match_is_local_and_requires_actual_pixel_pattern():
     assert not template.matches(frame, altered, xml)
 
 
+def test_gps_searching_can_only_match_explicit_prestart_position_setup_not_normal_start():
+    template, frame, image, xml = setup()
+    searching = frame.model_copy(
+        update={
+            "gps_label": "搜索中",
+            "issues": ("gps_searching", "start_controls_and_current_record_identity_unverified"),
+        }
+    )
+    assert not template.matches(searching, image, xml)
+    assert template.matches(searching, image, xml, allow_gps_searching=True)
+    assert not template.matches(
+        searching, Image.new("RGB", (200, 200)), xml, allow_gps_searching=True
+    )
+    assert not template.matches(
+        searching.model_copy(update={"elapsed_s": 1}), image, xml, allow_gps_searching=True
+    )
+    assert not template.matches(
+        searching.model_copy(update={"issues": ("gps_status_missing_or_ambiguous",)}),
+        image,
+        xml,
+        allow_gps_searching=True,
+    )
+
+
 @pytest.mark.parametrize(
     "changes",
     [

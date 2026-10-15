@@ -42,7 +42,19 @@ class StartButtonTemplate:
         with Image.open(path) as image:
             return cls(image, screen_size, bounds)
 
-    def matches(self, frame: TargetInspection, screenshot: Image.Image, hierarchy: str) -> bool:
+    def matches(
+        self,
+        frame: TargetInspection,
+        screenshot: Image.Image,
+        hierarchy: str,
+        *,
+        allow_gps_searching: bool = False,
+    ) -> bool:
+        if type(allow_gps_searching) is not bool:
+            return False
+        allowed_issues = {"start_controls_and_current_record_identity_unverified"}
+        if allow_gps_searching:
+            allowed_issues.add("gps_searching")
         if (
             frame.package != TARGET
             or frame.activity != RUN_ACTIVITY
@@ -54,9 +66,7 @@ class StartButtonTemplate:
             or frame.completed_checkpoints != 0
             or frame.counter_label != "已打卡"
             or screenshot.size != self.screen_size
-            or any(
-                i != "start_controls_and_current_record_identity_unverified" for i in frame.issues
-            )
+            or any(i not in allowed_issues for i in frame.issues)
             or len(hierarchy) > 2 * 1024 * 1024
             or "<!DOCTYPE" in hierarchy.upper()
             or "<!ENTITY" in hierarchy.upper()

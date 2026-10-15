@@ -126,7 +126,6 @@ def enter_formal_zero(
                 close.click()
             elif (
                 scene_helper is not None
-                and ad_attempts < 2
                 and callable(getattr(scene_helper, "close_ad", None))
                 and scene_helper.opaque_overlay(tree)
             ):
@@ -134,6 +133,8 @@ def enter_formal_zero(
                 if last_close is not None and clock() - last_close < 3:
                     sleep(0.2)
                     continue
+                if ad_attempts >= 2:
+                    raise ValueError("广告建议预算已用完；未执行未确认的关闭")
                 ad_attempts += 1
                 began = clock()
                 try:
@@ -141,7 +142,13 @@ def enter_formal_zero(
                 except RuntimeError:
                     raise ValueError("广告关闭建议不可用；不继续入口") from None
                 if sent is not True:
-                    raise ValueError("广告关闭未获本地确认；不继续入口")
+                    # 非动作建议不是一次失败点击；过渡广告可能自行消失。
+                    # 只继续采集，不放宽图形阈值、不重复启动，也不点击其他控件。
+                    deadline = min(maximum_deadline, deadline + min(30, clock() - began))
+                    last_close = clock()
+                    progress("ad_not_actioned_wait_for_observation")
+                    sleep(0.2)
+                    continue
                 deadline = min(maximum_deadline, deadline + min(30, clock() - began))
                 last_close = clock()
                 sleep(0.2)

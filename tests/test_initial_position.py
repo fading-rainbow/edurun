@@ -103,7 +103,7 @@ def connector(view):
 
     return SimpleNamespace(
         capture=capture,
-        template=SimpleNamespace(matches=lambda *_: True),
+        template=SimpleNamespace(matches=lambda *_a, **_kw: True),
         clock=lambda: 10.1,
         bridge=SimpleNamespace(location_wgs84=lambda *a, **kw: writes.append((a, kw))),
     ), writes
@@ -152,10 +152,10 @@ def test_location_write_requires_fresh_zero_and_current_authorization():
 
 def test_countdown_pixel_or_expired_observation_never_sets_position():
     c, writes = connector(zero())
-    c.template.matches = lambda *_: False  # Countdown also has zero seconds.
+    c.template.matches = lambda *_a, **_kw: False  # Countdown also has zero seconds.
     with pytest.raises(ValueError, match="正式零状态"):
         refresh_initial_position(c, GeoPoint(lat=0, lon=0), lambda: True)
-    c.template.matches = lambda *_: True
+    c.template.matches = lambda *_a, **_kw: True
     for expired in (9.99, 12, 20):
         c.clock = lambda expired=expired: expired
         with pytest.raises(ValueError, match="过期"):

@@ -408,15 +408,21 @@ def test_login_preparation_without_helper_is_backward_compatible():
     "outcome", [False, ValueError("PRIVATE_DETAIL"), RuntimeError("PRIVATE_KEY")]
 )
 def test_login_preparation_fails_closed_on_unconfirmed_close(outcome):
-    helper, ui = Helper([outcome]), OpaqueUI()
+    helper, ui = Helper([outcome, outcome]), OpaqueUI()
+    now = [0.0]
+
+    def clock():
+        now[0] += 0.5
+        return now[0]
+
     result = prepare_current_login(
         MainBridge(),
         ui_factory=lambda _: SimpleNamespace(device=ui),
-        clock=lambda: 0,
+        clock=clock,
         sleep=lambda _: None,
         scene_helper=helper,
     )
-    assert result["state"] == "unknown" and helper.calls == 1
+    assert result["state"] == "unknown" and helper.calls == (2 if outcome is False else 1)
     assert "PRIVATE" not in str(result)
 
 
@@ -477,17 +483,105 @@ def test_portal_closes_opaque_ad_at_most_twice_then_fails_without_entry_clicks()
 
 @pytest.mark.parametrize("outcome", [False, RuntimeError("PRIVATE_KEY")])
 def test_portal_unconfirmed_close_fails_closed_without_leaking(outcome):
-    helper, ui = Helper([outcome]), OpaqueUI()
+    helper, ui = Helper([outcome, outcome]), OpaqueUI()
+    now = [0.0]
+
+    def clock():
+        now[0] += 0.5
+        return now[0]
+
     with pytest.raises(ValueError) as error:
         enter_formal_zero(
             PortalBridge(),
             lambda: True,
             ui_factory=lambda _: ui,
-            clock=lambda: 0,
+            clock=clock,
             sleep=lambda _: None,
             scene_helper=helper,
         )
-    assert helper.calls == 1 and "PRIVATE" not in str(error.value) and not ui.clicked
+    assert helper.calls == (2 if outcome is False else 1)
+    assert "PRIVATE" not in str(error.value) and not ui.clicked
+
+
+def test_login_transient_ad_no_action_can_be_followed_by_normal_logged_in_page(monkeypatch):
+    ui = OpaqueUI()
+
+    class TransientHelper(Helper):
+        def close_ad(self, *_args):
+            self.calls += 1
+            ui.tree = NORMAL % ("tv_title", "我的")
+            return False
+
+    helper = TransientHelper([])
+    monkeypatch.setattr(
+        "budao.auth_ui.inspect_login_ui",
+        lambda *_: {"state": "unknown" if ui.tree == OPAQUE else "logged_in_ui"},
+    )
+    result = prepare_current_login(
+        MainBridge(),
+        ui_factory=lambda _: ui,
+        clock=lambda: 0,
+        sleep=lambda _: None,
+        scene_helper=helper,
+    )
+    assert result["state"] == "logged_in_ui"
+    assert helper.calls == 1 and not ui.clicked
+
+
+def test_portal_transient_ad_no_action_continues_to_real_rules_and_zero(monkeypatch):
+    from test_portal import UI as EntryUI
+    from test_portal import Bridge as EntryBridge
+
+    from budao.portal import BEFORE
+
+    b, events = EntryBridge(), []
+
+    class TransitionUI(EntryUI):
+        def __call__(self, **kwargs):
+            result = super().__call__(**kwargs)
+            if b.phase == "transition":
+                result.count = 0
+            if kwargs.get("resourceId") == TARGET + ":id/tv_enterRun":
+                original = result.click
+
+                def click():
+                    original()
+                    b.phase, b.focus = "transition", MAIN
+
+                result.click = click
+            return result
+
+        def dump_hierarchy(self):
+            return OPAQUE if b.phase == "transition" else super().dump_hierarchy()
+
+    class TransientHelper(Helper):
+        def close_ad(self, *_args):
+            self.calls += 1
+            b.phase, b.focus = "rules", BEFORE
+            return False
+
+    helper = TransientHelper([])
+    monkeypatch.setattr(
+        "budao.portal.parse_run_metrics",
+        lambda _: {
+            "distance_m": 0,
+            "elapsed_s": 0,
+            "completed_checkpoints": 0,
+            "counter_label": "已打卡",
+        },
+    )
+    result = enter_formal_zero(
+        b,
+        lambda: True,
+        ui_factory=TransitionUI,
+        clock=lambda: 0,
+        sleep=lambda _: None,
+        scene_helper=helper,
+        on_progress=events.append,
+    )
+    assert result == 1 and helper.calls == 1
+    assert b.clicks == ["tv_run", "tv_enterRun", "tv_cancle"]
+    assert any(e["event"] == "ad_not_actioned_wait_for_observation" for e in events)
 
 
 # ---- live_runtime ----
