@@ -146,7 +146,9 @@ def test_unready_check_only_or_missing_component_does_not_start():
 def test_wrong_factory_type_fails_terminal_and_releases_slot_without_echo():
     c = ExecutionCoordinator(Preparation(), lambda: object())
     c.begin(start=True, photo_ready=True)
-    assert wait_terminal(c)["state"] == "error"
+    result = wait_terminal(c)
+    assert result["state"] == "error"
+    assert result["ready"] is False and result["run_started"] is False
 
 
 @pytest.mark.parametrize("change", [{"ready": 1}, {"records_submitted": True}, {"checks": []}])

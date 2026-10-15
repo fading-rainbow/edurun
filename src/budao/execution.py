@@ -203,6 +203,7 @@ class ExecutionCoordinator:
                 | {
                     "state": "error",
                     "message": MESSAGES["error"],
+                    "ready": False,
                     "run_started": isinstance(runner, SessionRunner) and runner.started is True,
                     "records_submitted": 0,
                     "record_valid_proven": False,

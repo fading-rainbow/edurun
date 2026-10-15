@@ -43,6 +43,54 @@ def test_missing_or_same_uid_proof_is_not_an_independent_receiver(tmp_path):
     assert not verify_motion_evidence(tmp_path, Path(".local/proof.json"), sample)
 
 
+def test_preflight_reports_unreachable_gps_before_factory_or_pending_fresh_setup(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from test_raw_motion import clip
+
+    from budao.mumu import MuMuBridge
+
+    directory = tmp_path / ".local"
+    directory.mkdir()
+    (directory / "run.json").write_text(json.dumps(settings()), "utf-8")
+    runtime = LiveRuntime(tmp_path, Path(".local/profile.json"), Path(".local/run.json"))
+
+    class Bridge(MuMuBridge):
+        def __init__(self):
+            pass
+
+        def run(self, *args):
+            assert args == ("shell", "dumpsys", "sensorservice")
+            return "Mode: NORMAL"
+
+    monkeypatch.setattr("budao.live_runtime.verify_motion_evidence", lambda *_: True)
+    monkeypatch.setattr(
+        "budao.live_runtime.prepare_recorded_probe", lambda *_a, **_kw: clip(tmp_path)
+    )
+    monkeypatch.setattr(runtime, "_template", lambda: None)
+
+    def outside(_bridge):
+        raise ValueError("private location details must not reach UI")
+
+    monkeypatch.setattr(runtime, "_initial_position", outside)
+    route = {"catalog_entries": 1, "app_confirmed_approaches": 1}
+    blocked = runtime.preflight(route, Bridge())
+    assert blocked["runtime"] == (
+        "not_ready",
+        "当前位置不在可达通道或GPS未就绪；未开始乐跑",
+    )
+    monkeypatch.setattr(
+        runtime, "_initial_position", lambda _: SimpleNamespace(initialization_required=True)
+    )
+    pending = runtime.preflight(route, Bridge())
+    assert pending["runtime"] == (
+        "pass",
+        "新会话起点待正式零状态后设置并实收核验；尚未移动或开始",
+    )
+
+
 def test_long_run_requires_explicit_bounded_rollover_not_unlimited_clip():
     assert (
         RuntimeSettings.model_validate(

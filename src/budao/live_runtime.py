@@ -18,7 +18,8 @@ from .card_observer import NamedCardObserver
 from .driver import DriveEngine
 from .finish_connector import FinishConnector
 from .foreground_motion import ForegroundMotionClient
-from .models import GeoPoint, RouteConfig, StrictModel
+from .initial_position import plan_initial_position, read_gps_position, refresh_initial_position
+from .models import RouteConfig, StrictModel
 from .mumu import MuMuBridge
 from .mumu_driver import MuMuPositionWorker
 from .portal import enter_formal_zero
@@ -54,9 +55,12 @@ class RuntimeSettings(StrictModel):
     run_zone_label: str | None = Field(default=None, min_length=1, max_length=128)
     vision_config: Path | None = None
     resume_evidence: Path | None = None
+    initialize_fresh_position: bool = Field(default=False, strict=True)
 
     @model_validator(mode="after")
     def bounded_total(self):
+        if self.initialize_fresh_position and self.resume_evidence is not None:
+            raise ValueError("已有会话不能设置新起点")
         if self.maximum_s > 900 and not self.rollover_enabled:
             raise ValueError("超过单片段窗口必须显式启用暂停换窗")
         return self
@@ -388,6 +392,13 @@ class LiveRuntime:
         prepare_recorded_probe(self.root, self.settings.motion_csv, 150, bounded_stream=True)
         runtime_ok = normal
         runtime_detail = "已装配单次开始与有界调度；结束保存及有效成绩另行核验"
+        try:
+            position = self._initial_position(bridge)
+            if position.initialization_required:
+                runtime_detail = "新会话起点待正式零状态后设置并实收核验；尚未移动或开始"
+        except ValueError:
+            runtime_ok = False
+            runtime_detail = "当前位置不在可达通道或GPS未就绪；未开始乐跑"
         if self.settings.resume_evidence is not None:
             try:
                 self._resume_ticket(bridge)
@@ -418,21 +429,42 @@ class LiveRuntime:
             self.root, self.settings.start_template, (720, 1280), (229, 1161, 517, 1257)
         )
 
+    def _initial_position(self, bridge):
+        profile = _load(private_file(self.root, self.profile), RunProfile)
+        config = _load(private_file(self.root, profile.route_file), RouteConfig)
+        planner = RoutePlanner(config)
+        observed = read_gps_position(bridge.run("shell", "dumpsys", "location"))
+        return plan_initial_position(
+            planner, observed, initialize_fresh=self.settings.initialize_fresh_position
+        )
+
     def build(self):
         preflight_profile(self.profile, self.root)
         profile = _load(private_file(self.root, self.profile), RunProfile)
         bridge = MuMuBridge(private_file(self.root, profile.receipt_file))
         config = _load(private_file(self.root, profile.route_file), RouteConfig)
         planner = RoutePlanner(config)
-        gps = bridge.run("shell", "dumpsys", "location").split("    gps provider:", 1)[1]
-        match = re.search(r"last location=Location\[gps ([\d.]+),([\d.]+) ", gps)
-        if match is None:
-            raise ValueError("没有实际同设备当前位置")
-        initial = GeoPoint(lat=float(match[1]), lon=float(match[2]))
-        planner.plan(initial, config.baseline[0])
+        position = plan_initial_position(
+            planner,
+            read_gps_position(bridge.run("shell", "dumpsys", "location")),
+            initialize_fresh=self.settings.initialize_fresh_position,
+        )
+        initial = position.planned
         ticket = self._resume_ticket(bridge) if self.settings.resume_evidence is not None else None
         evidence = self.root / ".local/runs" / ("native-" + secrets.token_hex(8))
         evidence.mkdir()
+        (evidence / "initial-position-plan.json").write_text(
+            json.dumps(
+                {
+                    "observed_cached_position": position.observed.model_dump(),
+                    "planned_position": position.planned.model_dump(),
+                    "initialization_required": position.initialization_required,
+                    "received_position_proven": False,
+                    "new_start_attempted": False,
+                }
+            ),
+            "utf-8",
+        )
         (self.root / ".local/setup/native-latest.json").write_text(
             json.dumps({"evidence": str(evidence)}), "utf-8"
         )
@@ -449,11 +481,7 @@ class LiveRuntime:
         motion = ForegroundMotionClient(bridge, bounded_stream=True, replay_passes=6)
 
         def refresh_gps(authorize):
-            cap = connector.capture()
-            view = cap.frame.inspection
-            if view.distance_m != 0 or view.elapsed_s != 0 or view.completed_checkpoints != 0:
-                raise ValueError("同位置预刷新只允许正式零状态")
-            bridge.location_wgs84(initial, authorize=authorize, command_timeout_s=1)
+            refresh_initial_position(connector, initial, authorize)
 
         runner = JournalRunner(
             connector,
