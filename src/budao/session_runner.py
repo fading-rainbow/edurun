@@ -218,11 +218,27 @@ class SessionRunner:
                     witness, lambda: not cancel.is_set() and authorize() is True
                 )
             initial = self.connector.capture(motion_request=self.motion.request)
-            if not self._eligible_motion(initial.frame.inspection) or cancel.is_set():
+            if (
+                not self._eligible_motion(initial.frame.inspection)
+                or not received_gps_matches(
+                    initial.motion_snapshot,
+                    self.motion.request,
+                    initial.android_observed_ns,
+                    self.dispatcher.worker.engine.position,
+                )
+                or cancel.is_set()
+            ):
                 raise ValueError("开始后没有本次允许观察")
             self.motion.start(initial.android_observed_ns)
             deadline = self.clock() + self.maximum_s
             window_deadline = self.clock() + 600
+            if cancel.is_set() or authorize() is not True:
+                raise ValueError("起步前运行许可已经撤销；不下发路线")
+            # 使用已经核验的首帧启动路由，而不是闲置等待下一次较慢的UI采集。
+            # 输入START失败不会到达这里；ACK仍不代表实收，循环内原有接收守卫不变。
+            first_decision = self.dispatcher.update(initial.frame)
+            if first_decision.action not in {"base_route", "navigate", "wait"}:
+                raise ValueError("起步首帧路由未通过；不重复开始")
             while not cancel.is_set() and self.clock() < deadline:
                 if self.rollover_enabled and self.clock() >= window_deadline:
                     report.update(state="recovering", message="有界输入片段换窗；暂停并重新核对")

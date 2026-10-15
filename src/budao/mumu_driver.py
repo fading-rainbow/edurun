@@ -30,6 +30,7 @@ class MuMuPositionWorker:
         self.bridge, self.engine, self.clock = bridge, engine, clock
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
+        self.startup_wake = threading.Event()
         self.revoked = threading.Event()
         self.revoked.set()
         self.thread: threading.Thread | None = None
@@ -86,6 +87,8 @@ class MuMuPositionWorker:
                     self.revoked.clear()
             finally:
                 self.state = self._snapshot()
+            if self.commands_acknowledged == 0:
+                self.startup_wake.set()
 
     def renew(self, observed_at: float) -> None:
         with self.lock:
@@ -248,7 +251,14 @@ class MuMuPositionWorker:
                 before = self.clock()
                 self._tick()
                 # GPS至多约1Hz，不补发积压的位置。没有运动/计步API调用。
-                self.stop_event.wait(max(0, 1 - (self.clock() - before)))
+                delay = max(0, 1 - (self.clock() - before))
+                if self.commands_acknowledged:
+                    self.stop_event.wait(delay)
+                else:
+                    # 尚未输出任何位置时，首条已验证路径可唤醒空闲线程；
+                    # 首次输出之后仍固定至多约1Hz，不因换路/续期突发补发。
+                    self.startup_wake.wait(delay)
+                    self.startup_wake.clear()
         except Exception as error:
             with self.lock:
                 self.error = error
@@ -261,6 +271,7 @@ class MuMuPositionWorker:
         if not math.isfinite(timeout_s) or not 0 < timeout_s <= 30:
             raise ValueError("线程退出等待必须在0–30秒内")
         self.stop_event.set()
+        self.startup_wake.set()
         self.revoked.set()
         self._clear_pending(disallow=True)
         if self.thread:

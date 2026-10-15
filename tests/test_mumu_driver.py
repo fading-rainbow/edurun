@@ -209,6 +209,45 @@ def test_loop_wait_is_bounded_one_hertz_and_does_not_catch_up(setup, monkeypatch
     assert waits == [0.75] and len(bridge.locations) == 1
 
 
+def test_first_path_wakes_only_before_first_vendor_output(setup):
+    worker, bridge, clock, config = setup
+    worker.set_path(config.baseline, 0, repeat=True)
+    assert worker.startup_wake.is_set()
+    worker.startup_wake.clear()
+    worker._tick()
+    assert len(bridge.locations) == 1
+    clock[0] = 1
+    worker.set_path(config.baseline, 1, repeat=True)
+    assert not worker.startup_wake.is_set()
+
+
+def test_idle_thread_first_path_wakes_without_waiting_for_poll_grid(setup, monkeypatch):
+    worker, bridge, _clock, config = setup
+    parked, sent = threading.Event(), threading.Event()
+    wait = worker.startup_wake.wait
+    output = bridge.location_wgs84
+
+    def parked_wait(_delay):
+        parked.set()
+        return wait(5)  # Controlled synthetic wait: only wake/stop can release it promptly.
+
+    def location(*args, **kwargs):
+        output(*args, **kwargs)
+        sent.set()
+
+    monkeypatch.setattr(worker.startup_wake, "wait", parked_wait)
+    monkeypatch.setattr(bridge, "location_wgs84", location)
+    try:
+        worker.start()
+        assert parked.wait(1)
+        assert not bridge.locations
+        worker.set_path(config.baseline, 0, repeat=True)
+        assert sent.wait(1)
+    finally:
+        worker.stop()
+    assert len(bridge.locations) == 1 and not worker.thread.is_alive()
+
+
 def test_real_thread_pause_can_revoke_while_guard_holds_io_lock(setup):
     worker, bridge, _clock, config = setup
     entered, release = threading.Event(), threading.Event()

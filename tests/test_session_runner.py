@@ -81,6 +81,8 @@ class Dispatcher(RuntimeDispatcher):
 
     def update(self, _frame):
         self.calls.append("update")
+        if self.calls.count("update") == 1:
+            return Decision(action="base_route", reason="Synthetic startup routing")
         return Decision(action="finish_ready", reason="Synthetic terminal decision")
 
     def stop(self):
@@ -174,7 +176,7 @@ def test_once_only_kernel_composes_prepare_start_capture_dispatch_and_cleanup(tm
     assert result["mode_restored_normal"] and result["app_pause_confirmed"]
     assert result["records_submitted"] == 0 and not result["record_valid_proven"]
     assert m.calls[:2] == ["prepare", "preload"] and m.calls[-1] == "stop"
-    assert d.calls == ["start", "update", "stop"] and c.calls.count("begin") == 1
+    assert d.calls == ["start", "update", "update", "stop"] and c.calls.count("begin") == 1
     assert b.mode == NORMAL
     with pytest.raises(ValueError, match="已经消费"):
         r.run(lambda: True, reports.append)
@@ -228,6 +230,79 @@ def test_same_anchor_bootstrap_is_after_real_witness_and_mode_before_motion_star
     r.refresh_started_gps = refresh
     result = r.run(lambda: True, lambda _: None)
     assert result["state"] == "finish_ready" and pulses == ["same_anchor_only"]
+
+
+def test_first_valid_frame_routes_before_next_weak_gps_capture(tmp_path, monkeypatch):
+    r, _b, c, d, m = setup(tmp_path)
+    events = []
+    original_capture = c.capture
+
+    def capture(**kwargs):
+        cap = original_capture(**kwargs)
+        if kwargs.get("renew_motion"):
+            events.append("next_capture_weak")
+            cap = RunCapture(
+                cap.frame.model_copy(
+                    update={
+                        "inspection": cap.frame.inspection.model_copy(
+                            update={"gps_label": "GPS信号弱"}
+                        )
+                    }
+                ),
+                cap.hierarchy,
+                cap.screenshot,
+                cap.android_observed_ns,
+                cap.motion_snapshot,
+            )
+        return cap
+
+    def dispatch(frame):
+        assert m.started
+        good = frame.inspection.gps_label == "GPS信号优"
+        events.append("first_frame_routed" if good else "weak_frame_paused")
+        return Decision(action="base_route" if good else "pause", reason="Synthetic GPS transition")
+
+    monkeypatch.setattr(c, "capture", capture)
+    monkeypatch.setattr(d, "update", dispatch)
+    result = r.run(lambda: True, lambda _: None)
+    assert events == ["first_frame_routed", "next_capture_weak", "weak_frame_paused"]
+    assert result["state"] == "paused" and result["records_submitted"] == 0
+
+
+def test_post_start_stale_reception_cannot_arm_motion_or_prime_route(tmp_path, monkeypatch):
+    r, _b, c, d, m = setup(tmp_path)
+    capture = c.capture
+
+    def stale_after_start(**kwargs):
+        cap = capture(**kwargs)
+        if c.last_action_request is not None:
+            cap.motion_snapshot["gps_reception"]["last_received_ns"] = 1_000_000_000
+        return cap
+
+    monkeypatch.setattr(c, "capture", stale_after_start)
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "error" and result["run_started"]
+    assert not m.started and "update" not in d.calls
+    assert result["records_submitted"] == 0 and result["mode_restored_normal"]
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_input_start_failure_or_cancellation_cannot_prime_route(tmp_path, monkeypatch, cancelled):
+    import threading
+
+    r, _b, _c, d, m = setup(tmp_path)
+    cancel = threading.Event()
+
+    def start(_):
+        if cancelled:
+            cancel.set()
+        else:
+            raise TimeoutError("Synthetic unknown input START result")
+
+    monkeypatch.setattr(m, "start", start)
+    result = r.run(lambda: True, lambda _: None, cancel=cancel)
+    assert "update" not in d.calls and result["records_submitted"] == 0
+    assert result["mode_restored_normal"]
 
 
 def test_missing_fresh_same_position_gps_cannot_click_start_or_open_injection(tmp_path):
