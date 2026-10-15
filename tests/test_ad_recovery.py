@@ -596,19 +596,20 @@ def test_portal_transient_ad_no_action_continues_to_real_rules_and_zero(monkeypa
 
 
 @pytest.mark.parametrize("intercept_count,grade_changes", [(1, False), (2, False), (1, True)])
+@pytest.mark.parametrize("return_delay", [0, 2])
 def test_ad_returned_to_same_home_reenters_preparation_once_not_actual_start(
-    monkeypatch, intercept_count, grade_changes
+    monkeypatch, intercept_count, grade_changes, return_delay
 ):
     from test_portal import UI as EntryUI
     from test_portal import Bridge as EntryBridge
 
     b, events = EntryBridge(), []
-    state = {"entries": 0, "grade": "1", "t": 0.0}
+    state = {"entries": 0, "grade": "1", "t": 0.0, "delay": 0}
 
     class InterceptUI(EntryUI):
         def __call__(self, **kwargs):
             result = super().__call__(**kwargs)
-            if b.phase == "ad":
+            if b.phase in {"ad", "returning"}:
                 result.count = 0
             if kwargs.get("resourceId") == TARGET + ":id/tv_enterRun":
                 original = result.click
@@ -625,12 +626,21 @@ def test_ad_returned_to_same_home_reenters_preparation_once_not_actual_start(
         def dump_hierarchy(self):
             if b.phase == "ad":
                 return OPAQUE
+            if b.phase == "returning":
+                if state["delay"] > 0:
+                    state["delay"] -= 1
+                    return (
+                        f'<hierarchy><node package="{TARGET}" '
+                        f'resource-id="{TARGET}:id/loading"/></hierarchy>'
+                    )
+                b.phase = "main"
             return super().dump_hierarchy().replace('text="1"', f'text="{state["grade"]}"')
 
     class ReturningHelper(Helper):
         def close_ad(self, *_):
             self.calls += 1
-            b.phase, b.focus = "main", MAIN
+            b.phase, b.focus = "returning" if return_delay else "main", MAIN
+            state["delay"] = return_delay
             if grade_changes:
                 state["grade"] = "2"
             return False

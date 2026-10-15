@@ -211,14 +211,22 @@ def enter_formal_zero(
                 ):
                     raise ValueError("广告后有未知记录或认证提示，不重新进入")
                 grade = field(tree, "tv_run_data")
+                if grade is None:
+                    returned_home_grades.clear()
+                    progress("waiting_home_after_ad")
+                    sleep(0.2)
+                    continue  # 广告退场的中间帧不是稳定首页，也不能被当成失败点击。
+                if not grade_frames or grade != str(grade_frames[-1]):
+                    raise ValueError("广告后首页、标签或原成绩基线未确认")
                 if (
-                    not grade_frames
-                    or grade != str(grade_frames[-1])
-                    or ui.device(resourceId=TARGET + ":id/tv_run", text="乐跑", selected=True).count
+                    ui.device(resourceId=TARGET + ":id/tv_run", text="乐跑", selected=True).count
                     != 1
                     or ui.device(resourceId=TARGET + ":id/tv_enterRun", text="开始乐跑").count != 1
                 ):
-                    raise ValueError("广告后首页、标签或原成绩基线未确认")
+                    returned_home_grades.clear()
+                    progress("waiting_home_after_ad")
+                    sleep(0.2)
+                    continue
                 returned_home_grades.append(int(grade))
                 if len(returned_home_grades) >= 2:
                     if entry_attempts >= 2:
