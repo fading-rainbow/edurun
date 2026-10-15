@@ -1,4 +1,4 @@
-"""新会话起点规划：配置坐标不是接收证据，定位写入只能在正式零状态之后。"""
+"""新会话起点规划与已开始会话的同锚点接续；配置坐标不是接收证据。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 
 from .models import GeoPoint
-from .routes import RoutePlanner
+from .routes import RoutePlanner, distance
 
 
 @dataclass(frozen=True)
@@ -76,4 +76,50 @@ def refresh_initial_position(connector, initial: GeoPoint, authorize):
 
     if not permitted():
         raise ValueError("本次零状态观察或起点设置许可已过期")
+    connector.bridge.location_wgs84(initial, authorize=permitted, command_timeout_s=1)
+
+
+def refresh_started_anchor(connector, proof, initial: GeoPoint, authorize):
+    """开始衔接期间只刷新已接收的同一锚点，不启用路线或改写GPS信号。"""
+    from .resume import ResumeWitness
+    from .runtime import StartWitness
+
+    if (
+        not isinstance(proof, (StartWitness, ResumeWitness))
+        or not callable(authorize)
+        or authorize() is not True
+    ):
+        raise ValueError("同位置接续缺少本次开始/继续因果证据或许可")
+    proof = type(proof).model_validate(proof.model_dump())
+    original = proof.original if isinstance(proof, ResumeWitness) else proof
+    if original.serial != connector.bridge.serial or not isinstance(initial, GeoPoint):
+        raise ValueError("同位置接续设备或锚点不匹配")
+    initial = GeoPoint.model_validate(initial.model_dump())
+    current = read_gps_position(connector.bridge.run("shell", "dumpsys", "location"))
+    if distance(current, initial) > 10:
+        raise ValueError("同位置接续不能搬移当前锚点")
+    cap = connector.capture()
+    v, previous = cap.frame.inspection, proof.second_running.inspection
+    if (
+        v.package != previous.package
+        or v.activity != previous.activity
+        or v.version != previous.version
+        or v.state != "metrics"
+        or v.run_control_state != "running"
+        or v.counter_label != "已打卡"
+        or v.completed_checkpoints != 0
+        or v.distance_m != previous.distance_m
+        or v.checkpoint_cards != previous.checkpoint_cards
+        or v.elapsed_s is None
+        or not previous.elapsed_s <= v.elapsed_s <= previous.elapsed_s + 15
+        or v.gps_label not in {"GPS信号优", "GPS信号弱"}
+        or any(i != "start_controls_and_current_record_identity_unverified" for i in v.issues)
+    ):
+        raise ValueError("同位置接续不是刚确认开始的同一零打卡会话")
+
+    def permitted():
+        return 0 <= connector.clock() - cap.frame.sampled_at < 2 and authorize() is True
+
+    if not permitted():
+        raise ValueError("同位置接续观察或许可已经过期")
     connector.bridge.location_wgs84(initial, authorize=permitted, command_timeout_s=1)

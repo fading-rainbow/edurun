@@ -18,7 +18,12 @@ from .card_observer import NamedCardObserver
 from .driver import DriveEngine
 from .finish_connector import FinishConnector
 from .foreground_motion import ForegroundMotionClient
-from .initial_position import plan_initial_position, read_gps_position, refresh_initial_position
+from .initial_position import (
+    plan_initial_position,
+    read_gps_position,
+    refresh_initial_position,
+    refresh_started_anchor,
+)
 from .models import RouteConfig, StrictModel
 from .mumu import MuMuBridge
 from .mumu_driver import MuMuPositionWorker
@@ -483,6 +488,9 @@ class LiveRuntime:
         def refresh_gps(authorize):
             refresh_initial_position(connector, initial, authorize)
 
+        def refresh_started_gps(witness, authorize):
+            refresh_started_anchor(connector, witness, worker.engine.position, authorize)
+
         runner = JournalRunner(
             connector,
             dispatcher,
@@ -491,6 +499,7 @@ class LiveRuntime:
             maximum_s=self.settings.maximum_s,
             rollover_enabled=self.settings.rollover_enabled,
             refresh_gps=refresh_gps,
+            refresh_started_gps=refresh_started_gps,
             wait_for_human=True,
         )
         runner.save_authorized = self.settings.normal_save_authorized

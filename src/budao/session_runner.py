@@ -34,6 +34,7 @@ class SessionRunner:
         sleep: Callable[[float], None] = time.sleep,
         prepare_start: Callable | None = None,
         refresh_gps: Callable | None = None,
+        refresh_started_gps: Callable | None = None,
         wait_for_human: bool = False,
         resume_start: Callable | None = None,
         resolve_checkpoint: Callable | None = None,
@@ -69,9 +70,13 @@ class SessionRunner:
             clip,
         )
         self.maximum_s, self.clock, self.sleep = maximum_s, clock, sleep
-        if any(value is not None and not callable(value) for value in (prepare_start, refresh_gps)):
+        if any(
+            value is not None and not callable(value)
+            for value in (prepare_start, refresh_gps, refresh_started_gps)
+        ):
             raise ValueError("入口与同位置刷新必须是本机回调")
         self.prepare_start, self.refresh_gps = prepare_start, refresh_gps
+        self.refresh_started_gps = refresh_started_gps
         if type(wait_for_human) is not bool:
             raise ValueError("本人等待选项必须明确")
         self.wait_for_human, self.original_request = wait_for_human, motion.request
@@ -208,6 +213,10 @@ class SessionRunner:
                 != INJECTION
             ):
                 raise ValueError("未确认自有输入模式")
+            if self.refresh_started_gps is not None:
+                self.refresh_started_gps(
+                    witness, lambda: not cancel.is_set() and authorize() is True
+                )
             initial = self.connector.capture(motion_request=self.motion.request)
             if not self._eligible_motion(initial.frame.inspection) or cancel.is_set():
                 raise ValueError("开始后没有本次允许观察")

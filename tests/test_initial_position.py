@@ -8,6 +8,7 @@ from budao.initial_position import (
     plan_initial_position,
     read_gps_position,
     refresh_initial_position,
+    refresh_started_anchor,
 )
 from budao.live_runtime import RuntimeSettings
 from budao.models import GeoPoint
@@ -160,4 +161,71 @@ def test_countdown_pixel_or_expired_observation_never_sets_position():
         c.clock = lambda expired=expired: expired
         with pytest.raises(ValueError, match="过期"):
             refresh_initial_position(c, GeoPoint(lat=0, lon=0), lambda: True)
+    assert not writes
+
+
+def started_connector():
+    from test_runtime import frame, witness
+
+    reference = witness()
+    cap = SimpleNamespace(frame=frame(10, elapsed=3))
+    writes = []
+    bridge = SimpleNamespace(
+        serial=reference.serial,
+        run=lambda *_: "    gps provider:\n      last location=Location[gps 30,120 hAcc=1]\n",
+        location_wgs84=lambda *a, **kw: writes.append((a, kw)),
+    )
+    return (
+        SimpleNamespace(bridge=bridge, capture=lambda: cap, clock=lambda: 10.1),
+        reference,
+        writes,
+    )
+
+
+def test_started_anchor_only_refreshes_same_actual_position_and_does_not_drive():
+    c, proof, writes = started_connector()
+    p = GeoPoint(lat=30, lon=120)
+    refresh_started_anchor(c, proof, p, lambda: True)
+    assert len(writes) == 1 and writes[0][0] == (p,)
+    assert writes[0][1]["command_timeout_s"] == 1 and writes[0][1]["authorize"]() is True
+    c.clock = lambda: 12
+    assert writes[0][1]["authorize"]() is False
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"run_control_state": "paused"},
+        {"distance_m": 10},
+        {"completed_checkpoints": 1},
+        {"elapsed_s": 18},
+        {"checkpoint_cards": ()},
+        {"gps_label": "unknown"},
+        {"issues": ("human_face_verification_required",)},
+        {"state": "unavailable"},
+    ],
+)
+def test_started_anchor_rejects_changed_record_or_verification(changes):
+    c, proof, writes = started_connector()
+    cap = c.capture()
+    c.capture = lambda: SimpleNamespace(
+        frame=cap.frame.model_copy(
+            update={"inspection": cap.frame.inspection.model_copy(update=changes)}
+        )
+    )
+    with pytest.raises(ValueError, match="同一零打卡"):
+        refresh_started_anchor(c, proof, GeoPoint(lat=30, lon=120), lambda: True)
+    assert not writes
+
+
+def test_started_anchor_cannot_accept_forged_proof_foreign_device_or_move_location():
+    c, proof, writes = started_connector()
+    for changed in (proof.model_copy(update={"start_ui_verified": False}), object()):
+        with pytest.raises(ValueError):
+            refresh_started_anchor(c, changed, GeoPoint(lat=30, lon=120), lambda: True)
+    with pytest.raises(ValueError, match="搬移"):
+        refresh_started_anchor(c, proof, GeoPoint(lat=31, lon=120), lambda: True)
+    c.bridge.serial = "127.0.0.1:16500"
+    with pytest.raises(ValueError, match="设备"):
+        refresh_started_anchor(c, proof, GeoPoint(lat=30, lon=120), lambda: True)
     assert not writes

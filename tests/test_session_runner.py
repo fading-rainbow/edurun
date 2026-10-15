@@ -215,6 +215,21 @@ def test_denied_start_never_attempts_start_or_enters_injection(tmp_path):
     assert not any("data_injection" in call for call in b.calls)
 
 
+def test_same_anchor_bootstrap_is_after_real_witness_and_mode_before_motion_start(tmp_path):
+    r, b, c, d, m = setup(tmp_path)
+    pulses = []
+
+    def refresh(proof, authorize):
+        assert proof == witness() and c.last_action_request == m.request
+        assert d.started and b.mode == INJECTION and not m.started
+        assert authorize() is True
+        pulses.append("same_anchor_only")
+
+    r.refresh_started_gps = refresh
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "finish_ready" and pulses == ["same_anchor_only"]
+
+
 def test_missing_fresh_same_position_gps_cannot_click_start_or_open_injection(tmp_path):
     r, b, c, _d, _m = setup(tmp_path)
     c.gps_invalid = True
