@@ -92,6 +92,46 @@ def test_template_or_foreground_change_blocks_and_does_not_retry(monkeypatch):
     assert not clicked
 
 
+def test_slow_selector_read_cannot_outlive_two_second_observation(monkeypatch):
+    connector, clock, clicked, _ = setup(monkeypatch)
+
+    class SlowSelector:
+        @property
+        def count(self):
+            clock[0] += 2
+            return 1
+
+        def click(self):
+            clicked.append("start")
+
+    connector.ui.device = lambda **_: SlowSelector()
+    with pytest.raises(ValueError, match="读取控件后"):
+        connector.begin_once("a" * 32, lambda: True)
+    assert not clicked and connector.last_action_request is None
+
+
+def test_final_guarded_capture_not_followed_by_duplicate_device_reads(monkeypatch):
+    connector, _, clicked, device = setup(monkeypatch)
+    calls = []
+    original = device.run
+
+    def run(*args):
+        calls.append("device_guard")
+        return original(*args)
+
+    monkeypatch.setattr(device, "run", run)
+    original_capture = connector.capture
+
+    def capture(**kwargs):
+        calls.append("capture_pixels" if kwargs.get("pixels") else "capture_running")
+        return original_capture(**kwargs)
+
+    monkeypatch.setattr(connector, "capture", capture)
+    connector.begin_once("a" * 32, lambda: True)
+    assert calls[:2] == ["device_guard", "capture_pixels"]
+    assert calls.count("device_guard") == 1 and clicked == ["start"]
+
+
 def test_capture_refuses_protected_page_before_constructing_ui():
     device = Device()
     device.focus = ("com.tencent.mobileqq", "com.tencent.mobileqq.LoginActivity")

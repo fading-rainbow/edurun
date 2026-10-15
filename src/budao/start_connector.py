@@ -264,6 +264,11 @@ class StartConnector:
         self.used_requests.add(request_id)
         if not callable(authorize) or authorize() is not True:
             raise ValueError("本次运行准备条件/用户开始动作尚未确认")
+        if focused_component(self.bridge.run("shell", "dumpsys", "window", "displays")) != (
+            TARGET,
+            RUN_ACTIVITY,
+        ):
+            raise ValueError("动作前前台改变；未点击")
         before = self.prepare_begin(
             request_id, authorize, gps_position=gps_position, refresh_gps=refresh_gps
         )
@@ -275,18 +280,16 @@ class StartConnector:
             or not self.template.matches(v, before.screenshot, before.hierarchy)
         ):
             raise ValueError("当前不是已核对的正式零状态/开始按钮；未点击")
-        self.bridge.check_device()
-        if focused_component(self.bridge.run("shell", "dumpsys", "window", "displays")) != (
-            TARGET,
-            RUN_ACTIVITY,
-        ):
-            raise ValueError("动作前前台改变；未点击")
+        # capture在像素读取后，已通过受完整设备守卫的尾查询再次核对唯一前台；
+        # 不在新鲜帧后重复同一设备/前台查询，避免仅重复IO耗尽两秒许可。
         now = self.clock()
         if not 0 <= now - before.frame.sampled_at <= 2 or authorize() is not True:
             raise ValueError("动作前准备许可或观察已过期；未点击")
         button = self.ui.device(resourceId=TARGET + ":id/tv_start_pause_continue_run")
         if button.count != 1:
             raise ValueError("开始控件不唯一；未点击")
+        if not 0 <= self.clock() - before.frame.sampled_at <= 2 or authorize() is not True:
+            raise ValueError("读取控件后许可或观察已过期；未点击")
         action_at = self.clock()
         self.last_action_request = request_id  # 点击报错也可能已生效；仅用于保守清理。
         button.click()  # 实测4.3.0开始为一次点击，暂停才是长按；失败不重发。
