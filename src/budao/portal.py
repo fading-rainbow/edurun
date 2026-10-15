@@ -55,18 +55,45 @@ def enter_formal_zero(
     def focus():
         return focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
 
+    normal_pages = {
+        (TARGET, MAIN),
+        (TARGET, BEFORE),
+        (TARGET, RUN_ACTIVITY),
+        (TARGET, SPLASH),
+        KNOWN_AD_COMPONENT,
+        None,
+    }
+
+    def same_page(expected):
+        observed = focus()
+        if observed == expected:
+            return True
+        if observed in normal_pages:
+            progress("resample_normal_transition")
+            return False
+        raise ValueError("必要认证或未知前台；不继续动作")
+
     def click(name, text, expected):
         progress("before_" + name)
         bridge.check_device()
-        if clock() >= deadline or authorize() is not True or focus() != expected:
+        if clock() >= deadline or authorize() is not True:
             raise ValueError("入口许可或前台改变")
+        if not same_page(expected):
+            return False
         button = ui.device(resourceId=TARGET + ":id/" + name, text=text)
-        if button.count != 1:
+        count = button.count
+        if count == 0:
+            progress("resample_missing_control")
+            return False
+        if count != 1:
             raise ValueError("入口控件未知或不唯一")
-        if clock() >= deadline or authorize() is not True or focus() != expected:
+        if clock() >= deadline or authorize() is not True:
             raise ValueError("入口控件读取后许可、前台或时限改变")
+        if not same_page(expected):
+            return False
         button.click()
         progress("after_" + name)
+        return True
 
     initial = focus()
     progress("initial_focus_read")
@@ -118,8 +145,9 @@ def enter_formal_zero(
         if current not in {(TARGET, MAIN), (TARGET, BEFORE), (TARGET, RUN_ACTIVITY)}:
             raise ValueError("必要认证或未知页面；不读取、不覆盖")
         tree = ui.device.dump_hierarchy()
-        if focus() != current:
-            raise ValueError("采集期间前台改变")
+        if not same_page(current):
+            sleep(0.2)
+            continue  # 丢弃旧树；正常异步切页不能变成错误，更不能用旧树点击。
         if current == (TARGET, MAIN):
             close = ui.device(resourceId=TARGET + ":id/ad_close", description="关闭")
             if close.count == 1:
@@ -182,7 +210,8 @@ def enter_formal_zero(
                     raise ValueError("恢复提示不是本助手当前新会话，不点击")
                 if not grade_frames and type(recovery_grade) is int:
                     grade_frames.append(recovery_grade)
-                click("dialog_confirm", "恢复", current)
+                if not click("dialog_confirm", "恢复", current):
+                    continue
                 restored, entered, run_selected = True, True, True
             elif ui.device(resourceId=TARGET + ":id/tv_title", text="安全提示").count == 1:
                 if (
@@ -195,12 +224,14 @@ def enter_formal_zero(
                     != 1
                 ):
                     raise ValueError("安全提示的本次跑区未核对，不进入")
-                click("tv_sure", "进入乐跑", current)
+                if not click("tv_sure", "进入乐跑", current):
+                    continue
                 safety_confirmed = True
                 ad_interrupted_entry = False
                 returned_home_grades.clear()
             elif not run_selected:
-                click("tv_run", "乐跑", current)
+                if not click("tv_run", "乐跑", current):
+                    continue
                 run_selected = True
             elif entered and ad_interrupted_entry:
                 # 某些插屏吞掉的是“进入准备页”请求：广告退场后仍为相同首页，
@@ -248,10 +279,13 @@ def enter_formal_zero(
                         raise ValueError("开始前成绩发生变化；不开始")
                     if on_grade is not None:
                         on_grade(grade_frames[-1], tree)
-                    click("tv_enterRun", "开始乐跑", current)
+                    if not click("tv_enterRun", "开始乐跑", current):
+                        continue
                     entered = True
                     entry_attempts += 1
         else:
+            if not entered and entry_attempts > 0 and pause_expected is None:
+                entered = True  # 上一个实际入口请求在广告退场后才完成；不是新的开始。
             ad_interrupted_entry = False
             returned_home_grades.clear()
             # 不自动确认恢复、放弃记录、权限更改或身份验证提示。
@@ -267,7 +301,8 @@ def enter_formal_zero(
                     for k, v in expected.items()
                 ):
                     raise ValueError("本次正式规则变化；不开始")
-                click("tv_cancle", "我知道了", current)
+                if not click("tv_cancle", "我知道了", current):
+                    continue
                 rules_seen = True
             elif current == (TARGET, RUN_ACTIVITY):
                 metrics = parse_run_metrics(tree)
@@ -325,17 +360,19 @@ def enter_formal_zero(
                 if (
                     entered
                     and not rules_seen
-                    and not advised
-                    and scene_helper is not None
                     and metrics["distance_m"] == 0
                     and metrics["elapsed_s"] == 0
                     and metrics["completed_checkpoints"] == 0
                 ):
-                    advised = True
-                    began = clock()
-                    if scene_helper.open_rules(bridge, ui, authorize) is not True:
-                        raise ValueError("多模态未建议或未命中规则控件，不开始")
-                    deadline = min(maximum_deadline, deadline + min(30, clock() - began))
+                    if not advised:
+                        advised = True
+                        if scene_helper is None:
+                            raise ValueError("缺少本机规则控件处理器；不开始")
+                        began = clock()
+                        sent = scene_helper.open_rules(bridge, ui, authorize)
+                        progress("rules_open_requested" if sent is True else "rules_no_action")
+                        deadline = min(maximum_deadline, deadline + min(30, clock() - began))
+                    sleep(0.2)
                     continue
                 if (
                     not entered

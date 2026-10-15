@@ -514,7 +514,7 @@ class SceneAssistant:
             return False
         fresh = ui.device.dump_hierarchy()
         if not self._zero(fresh):
-            raise ValueError("规则控件读取后已经不是零状态")
+            return False  # 没有点击；规则可能自动弹出，必须由调用方重新采集确认。
         bridge.check_device()
         if (
             authorize() is not True
