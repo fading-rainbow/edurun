@@ -92,6 +92,8 @@ def enter_formal_zero(
     advised = False
     restored = False
     ad_attempts, last_close = 0, None
+    entry_attempts, ad_interrupted_entry = 0, False
+    returned_home_grades = []
     while clock() < deadline and authorize() is True:
         current = focus()
         progress(
@@ -109,6 +111,7 @@ def enter_formal_zero(
             sleep(0.2)
             continue
         if current == KNOWN_AD_COMPONENT:
+            ad_interrupted_entry |= entered
             dismiss_known_ad(bridge, ui, authorize=authorize)
             sleep(0.2)
             continue
@@ -120,6 +123,7 @@ def enter_formal_zero(
         if current == (TARGET, MAIN):
             close = ui.device(resourceId=TARGET + ":id/ad_close", description="关闭")
             if close.count == 1:
+                ad_interrupted_entry |= entered
                 bridge.check_device()
                 if focus() != current or authorize() is not True:
                     raise ValueError("广告关闭许可改变")
@@ -129,6 +133,7 @@ def enter_formal_zero(
                 and callable(getattr(scene_helper, "close_ad", None))
                 and scene_helper.opaque_overlay(tree)
             ):
+                ad_interrupted_entry |= entered
                 # 不透明全屏广告没有任何目标App资源ID；最多两次建议，两次点击间隔≥3秒。
                 if last_close is not None and clock() - last_close < 3:
                     sleep(0.2)
@@ -195,6 +200,32 @@ def enter_formal_zero(
             elif not run_selected:
                 click("tv_run", "乐跑", current)
                 run_selected = True
+            elif entered and ad_interrupted_entry:
+                # 某些插屏吞掉的是“进入准备页”请求：广告退场后仍为相同首页，
+                # 并非MapRun中的真实开始。仅在两帧首页/基线/标签一致后重进一次。
+                if pause_expected is not None or safety_confirmed or rules_seen:
+                    raise ValueError("广告后不是可重新进入的新准备流程")
+                if any(
+                    TARGET + ":id/" + name in tree
+                    for name in ("alert_dialog_content", "dialog_confirm")
+                ):
+                    raise ValueError("广告后有未知记录或认证提示，不重新进入")
+                grade = field(tree, "tv_run_data")
+                if (
+                    not grade_frames
+                    or grade != str(grade_frames[-1])
+                    or ui.device(resourceId=TARGET + ":id/tv_run", text="乐跑", selected=True).count
+                    != 1
+                    or ui.device(resourceId=TARGET + ":id/tv_enterRun", text="开始乐跑").count != 1
+                ):
+                    raise ValueError("广告后首页、标签或原成绩基线未确认")
+                returned_home_grades.append(int(grade))
+                if len(returned_home_grades) >= 2:
+                    if entry_attempts >= 2:
+                        raise ValueError("广告中断准备入口的重进预算已用完；未开始跑步")
+                    entered, ad_interrupted_entry = False, False
+                    returned_home_grades.clear()
+                    progress("ad_returned_home_preparation_retry")
             elif not entered:
                 grade = field(tree, "tv_run_data")
                 # 点击标签后，成绩数据/插屏广告异步到达；缺字段只等待，不重复点击标签。
@@ -209,6 +240,7 @@ def enter_formal_zero(
                         on_grade(grade_frames[-1], tree)
                     click("tv_enterRun", "开始乐跑", current)
                     entered = True
+                    entry_attempts += 1
         else:
             # 不自动确认恢复、放弃记录、权限更改或身份验证提示。
             title = ui.device(resourceId=TARGET + ":id/tv_title", text="当前跑区合格标准")

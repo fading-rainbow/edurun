@@ -595,6 +595,84 @@ def test_portal_transient_ad_no_action_continues_to_real_rules_and_zero(monkeypa
     assert any(e["event"] == "ad_not_actioned_wait_for_observation" for e in events)
 
 
+@pytest.mark.parametrize("intercept_count,grade_changes", [(1, False), (2, False), (1, True)])
+def test_ad_returned_to_same_home_reenters_preparation_once_not_actual_start(
+    monkeypatch, intercept_count, grade_changes
+):
+    from test_portal import UI as EntryUI
+    from test_portal import Bridge as EntryBridge
+
+    b, events = EntryBridge(), []
+    state = {"entries": 0, "grade": "1", "t": 0.0}
+
+    class InterceptUI(EntryUI):
+        def __call__(self, **kwargs):
+            result = super().__call__(**kwargs)
+            if b.phase == "ad":
+                result.count = 0
+            if kwargs.get("resourceId") == TARGET + ":id/tv_enterRun":
+                original = result.click
+
+                def click():
+                    original()
+                    state["entries"] += 1
+                    if state["entries"] <= intercept_count:
+                        b.phase, b.focus = "ad", MAIN
+
+                result.click = click
+            return result
+
+        def dump_hierarchy(self):
+            if b.phase == "ad":
+                return OPAQUE
+            return super().dump_hierarchy().replace('text="1"', f'text="{state["grade"]}"')
+
+    class ReturningHelper(Helper):
+        def close_ad(self, *_):
+            self.calls += 1
+            b.phase, b.focus = "main", MAIN
+            if grade_changes:
+                state["grade"] = "2"
+            return False
+
+    helper = ReturningHelper([])
+
+    def clock():
+        state["t"] += 0.2
+        return state["t"]
+
+    monkeypatch.setattr(
+        "budao.portal.parse_run_metrics",
+        lambda _: {
+            "distance_m": 0,
+            "elapsed_s": 0,
+            "completed_checkpoints": 0,
+            "counter_label": "已打卡",
+        },
+    )
+
+    def run():
+        return enter_formal_zero(
+            b,
+            lambda: True,
+            ui_factory=InterceptUI,
+            clock=clock,
+            sleep=lambda _: None,
+            scene_helper=helper,
+            on_progress=events.append,
+        )
+
+    if grade_changes or intercept_count == 2:
+        with pytest.raises(ValueError):
+            run()
+    else:
+        assert run() == 1
+        assert b.clicks == ["tv_run", "tv_enterRun", "tv_enterRun", "tv_cancle"]
+        assert any(e["event"] == "ad_returned_home_preparation_retry" for e in events)
+    assert state["entries"] == (1 if grade_changes else 2)
+    assert "tv_start_pause_continue_run" not in b.clicks
+
+
 # ---- live_runtime ----
 
 

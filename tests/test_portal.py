@@ -139,6 +139,34 @@ def test_slow_selector_cannot_send_action_after_entry_deadline():
     assert not b.clicks
 
 
+def test_entry_staying_home_without_observed_ad_is_not_blindly_retried():
+    now = [0.0]
+
+    class DroppedEntryUI(UI):
+        def __call__(self, **kwargs):
+            result = super().__call__(**kwargs)
+            if kwargs.get("resourceId") == TARGET + ":id/tv_enterRun":
+                original = result.click
+
+                def click():
+                    original()
+                    self.bridge.phase, self.bridge.focus = "main", MAIN
+
+                result.click = click
+            return result
+
+    def clock():
+        now[0] += 0.5
+        return now[0]
+
+    b = Bridge()
+    with pytest.raises(ValueError, match="未到零状态"):
+        enter_formal_zero(
+            b, lambda: True, ui_factory=DroppedEntryUI, clock=clock, sleep=lambda _: None
+        )
+    assert b.clicks == ["tv_run", "tv_enterRun"]
+
+
 def test_formal_window_closed_is_not_clicked_or_treated_as_free_run():
     class ClosedUI(UI):
         def dump_hierarchy(self):
