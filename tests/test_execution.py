@@ -151,6 +151,20 @@ def test_wrong_factory_type_fails_terminal_and_releases_slot_without_echo():
     assert result["ready"] is False and result["run_started"] is False
 
 
+def test_runner_error_also_clears_preparation_ready_not_just_factory_error():
+    c = ExecutionCoordinator(Preparation())
+    c._set(Preparation().check(True))
+    c._publish_runner(
+        {
+            "state": "error",
+            "run_started": False,
+            "records_submitted": 0,
+            "record_valid_proven": False,
+        }
+    )
+    assert c.status()["ready"] is False
+
+
 @pytest.mark.parametrize("change", [{"ready": 1}, {"records_submitted": True}, {"checks": []}])
 def test_eligible_preparation_requires_exact_booleans_and_all_distinct_gates(change):
     result = Preparation().check(True)

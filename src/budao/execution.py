@@ -98,6 +98,8 @@ class ExecutionCoordinator:
             "record_valid_proven": False,
             "one_click_workflow_verified": False,
         }
+        if state == "error":
+            public["ready"] = False
         if (
             type(value.get("run_started")) is not bool
             or type(value.get("records_submitted")) is not int

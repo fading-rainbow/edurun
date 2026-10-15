@@ -82,6 +82,81 @@ def test_existing_run_and_no_authorization_do_not_navigate():
     assert not bridge.clicks
 
 
+def test_slow_normal_ui_can_reach_zero_after_old_40s_budget_without_repeating_actions(monkeypatch):
+    now, events = [0.0], []
+
+    class SlowUI(UI):
+        def dump_hierarchy(self):
+            now[0] += 12
+            return super().dump_hierarchy()
+
+    monkeypatch.setattr(
+        "budao.portal.parse_run_metrics",
+        lambda _: {
+            "distance_m": 0,
+            "elapsed_s": 0,
+            "completed_checkpoints": 0,
+            "counter_label": "已打卡",
+        },
+    )
+    b = Bridge()
+    assert (
+        enter_formal_zero(
+            b,
+            lambda: True,
+            ui_factory=SlowUI,
+            clock=lambda: now[0],
+            sleep=lambda _: None,
+            on_progress=events.append,
+        )
+        == 1
+    )
+    assert 40 < now[0] < 90
+    assert b.clicks == ["tv_run", "tv_enterRun", "tv_cancle"]
+    assert events[-1]["event"] == "formal_zero_verified"
+    assert all(set(e) == {"event", "elapsed_s"} for e in events)
+
+
+def test_slow_selector_cannot_send_action_after_entry_deadline():
+    now = [0.0]
+
+    class ExpiringUI(UI):
+        def __call__(self, **kwargs):
+            result = super().__call__(**kwargs)
+            if kwargs.get("resourceId") == TARGET + ":id/tv_run":
+                now[0] = 100
+            return result
+
+    b = Bridge()
+    with pytest.raises(ValueError, match="时限"):
+        enter_formal_zero(
+            b,
+            lambda: True,
+            ui_factory=ExpiringUI,
+            clock=lambda: now[0],
+            sleep=lambda _: None,
+        )
+    assert not b.clicks
+
+
+def test_formal_window_closed_is_not_clicked_or_treated_as_free_run():
+    class ClosedUI(UI):
+        def dump_hierarchy(self):
+            return (
+                f'<hierarchy><node package="{TARGET}" visible-to-user="true" '
+                f'resource-id="{TARGET}:id/alert_dialog_content" '
+                'text="当前时间不是学校规定锻炼时段,你可以自由跑,自由跑不会关联成绩"/></hierarchy>'
+            )
+
+    b, events = Bridge(), []
+    with pytest.raises(ValueError, match="正式锻炼时段"):
+        enter_formal_zero(
+            b, lambda: True, ui_factory=ClosedUI, sleep=lambda _: None, on_progress=events.append
+        )
+    assert not b.clicks
+    assert events[-1]["event"] == "formal_window_closed"
+
+
 def test_nonzero_page_not_treated_as_new_session(monkeypatch):
     monkeypatch.setattr(
         "budao.portal.parse_run_metrics",

@@ -565,6 +565,10 @@ class LiveRuntime:
             return runner
 
         def prepare_start(authorize):
+            def portal_progress(value):
+                with (evidence / "portal-events.jsonl").open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(value) + "\n")
+
             scene = None
             if self.settings.vision_config is not None:
                 from .ui_advisor import SceneAssistant, UIAdvisor
@@ -581,6 +585,7 @@ class LiveRuntime:
                     authorize,
                     expected_zone=self.settings.run_zone_label,
                     scene_helper=scene,
+                    on_progress=portal_progress,
                 )
                 (evidence / "session-meta.json").write_text(
                     json.dumps(

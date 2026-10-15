@@ -36,24 +36,40 @@ def enter_formal_zero(
     restore_stamp=None,
     recovery_grade=None,
     on_restored=None,
+    on_progress=None,
 ):
     if not isinstance(bridge, MuMuBridge) or not callable(authorize):
         raise ValueError("正式入口仅支持独立MuMu及明确许可")
+    if on_progress is not None and not callable(on_progress):
+        raise ValueError("入口进度仅接受本机回调")
+    operation_began = clock()
+    deadline, maximum_deadline = operation_began + 90, operation_began + 180
+
+    def progress(event):
+        if on_progress is not None:
+            on_progress({"event": event, "elapsed_s": round(max(0, clock() - operation_began), 3)})
+
+    progress("connect_ui")
     ui = ui_factory(bridge)
 
     def focus():
         return focused_component(bridge.run("shell", "dumpsys", "window", "displays"))
 
     def click(name, text, expected):
+        progress("before_" + name)
         bridge.check_device()
-        if authorize() is not True or focus() != expected:
+        if clock() >= deadline or authorize() is not True or focus() != expected:
             raise ValueError("入口许可或前台改变")
         button = ui.device(resourceId=TARGET + ":id/" + name, text=text)
         if button.count != 1:
             raise ValueError("入口控件未知或不唯一")
+        if clock() >= deadline or authorize() is not True or focus() != expected:
+            raise ValueError("入口控件读取后许可、前台或时限改变")
         button.click()
+        progress("after_" + name)
 
     initial = focus()
+    progress("initial_focus_read")
     if initial == (LAUNCHER, LAUNCHER + ".LauncherActivity"):
         tasks = bridge.run("shell", "dumpsys", "activity", "activities")
         tops = target_task_tops(tasks)
@@ -67,9 +83,10 @@ def enter_formal_zero(
             TARGET + "/.activities.splash.SplashActivity",
             authorize=authorize,
         )
+        progress("app_open_requested")
     elif initial != (TARGET, MAIN):
         raise ValueError("正式入口必须从已登录首页开始，不接管旧运行")
-    deadline, run_selected, entered, rules_seen = clock() + 40, False, False, False
+    run_selected, entered, rules_seen = False, False, False
     grade_frames = []
     safety_confirmed = False
     advised = False
@@ -77,6 +94,17 @@ def enter_formal_zero(
     ad_attempts, last_close = 0, None
     while clock() < deadline and authorize() is True:
         current = focus()
+        progress(
+            "observe_"
+            + {
+                (TARGET, MAIN): "home",
+                (TARGET, BEFORE): "pre_run",
+                (TARGET, RUN_ACTIVITY): "run",
+                (TARGET, SPLASH): "splash",
+                KNOWN_AD_COMPONENT: "known_ad",
+                None: "no_focus",
+            }.get(current, "other")
+        )
         if current is None or current == (TARGET, SPLASH):
             sleep(0.2)
             continue
@@ -114,10 +142,15 @@ def enter_formal_zero(
                     raise ValueError("广告关闭建议不可用；不继续入口") from None
                 if sent is not True:
                     raise ValueError("广告关闭未获本地确认；不继续入口")
-                deadline += min(30, clock() - began)
+                deadline = min(maximum_deadline, deadline + min(30, clock() - began))
                 last_close = clock()
                 sleep(0.2)
                 continue
+            elif field(tree, "alert_dialog_content") == (
+                "当前时间不是学校规定锻炼时段,你可以自由跑,自由跑不会关联成绩"
+            ):
+                progress("formal_window_closed")
+                raise ValueError("当前不在正式锻炼时段；未开始自由跑")
             elif pause_expected is not None and field(tree, "dialog_confirm") == "恢复":
                 content = field(tree, "alert_dialog_content")
                 match = re.fullmatch(
@@ -251,7 +284,7 @@ def enter_formal_zero(
                     began = clock()
                     if scene_helper.open_rules(bridge, ui, authorize) is not True:
                         raise ValueError("多模态未建议或未命中规则控件，不开始")
-                    deadline += min(30, clock() - began)
+                    deadline = min(maximum_deadline, deadline + min(30, clock() - began))
                     continue
                 if (
                     not entered
@@ -262,6 +295,8 @@ def enter_formal_zero(
                     or metrics["counter_label"] != "已打卡"
                 ):
                     raise ValueError("不是本次已核实规则的正式零状态")
+                progress("formal_zero_verified")
                 return grade_frames[-1]
         sleep(0.2)
+    progress("entry_timeout_or_cancel")
     raise ValueError("正式入口未到零状态；不重复入口或开始")
