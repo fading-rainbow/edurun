@@ -10,7 +10,13 @@ from PIL import Image
 from budao.models import PixelPoint
 from budao.mumu import MuMuBridge
 from budao.target import RUN_ACTIVITY, TARGET
-from budao.ui_advisor import SceneAssistant, UIAdvice, UIAdvisor, redacted_ui_image
+from budao.ui_advisor import (
+    SceneAssistant,
+    UIAdvice,
+    UIAdvisor,
+    UIAdvisorTemporaryError,
+    redacted_ui_image,
+)
 
 
 def png():
@@ -118,7 +124,10 @@ class Advisor(UIAdvisor):
         return UIAdvice(screen="run_ready", confidence=0.9, action="open_rules", target=self.target)
 
 
-def test_model_pixel_must_hit_exact_live_rule_control(monkeypatch):
+def test_known_rule_control_is_local_and_does_not_depend_on_upstream(monkeypatch):
+    monkeypatch.setattr(
+        "budao.ui_advisor.parse_run_control_state", lambda _: "not_started_or_countdown"
+    )
     monkeypatch.setattr(
         "budao.ui_advisor.parse_run_metrics",
         lambda _: {
@@ -132,12 +141,21 @@ def test_model_pixel_must_hit_exact_live_rule_control(monkeypatch):
     calls = []
     button = SimpleNamespace(
         count=1,
-        info={"bounds": {"left": 23, "right": 81, "top": 851, "bottom": 909}},
+        info={
+            "bounds": {"left": 23, "right": 81, "top": 851, "bottom": 909},
+            "className": "android.widget.ImageView",
+            "enabled": True,
+            "clickable": True,
+        },
         click=lambda: calls.append("rule"),
     )
 
     class Device:
+        move = False
+
         def dump_hierarchy(self):
+            if self.move:
+                bridge.focus = ("com.tencent.mobileqq", "LoginActivity")
             return "<hierarchy/>"
 
         def __call__(self, **kwargs):
@@ -145,17 +163,60 @@ def test_model_pixel_must_hit_exact_live_rule_control(monkeypatch):
             return button
 
     ui = SimpleNamespace(device=Device(), screenshot=lambda: Image.open(io.BytesIO(png())))
-    assert SceneAssistant(Advisor(bridge, PixelPoint(x=52, y=880))).open_rules(
-        bridge, ui, lambda: True
-    )
-    assert not SceneAssistant(Advisor(bridge, PixelPoint(x=360, y=1200))).open_rules(
-        bridge, ui, lambda: True
-    )
-    moved = Advisor(bridge, PixelPoint(x=52, y=880))
-    moved.moved = True
+    advisor = Advisor(bridge, PixelPoint(x=52, y=880))
+
+    def unavailable(_png):
+        raise AssertionError("Known rules must not call the model")
+
+    monkeypatch.setattr(advisor, "advise", unavailable)
+    assert SceneAssistant(advisor).open_rules(bridge, ui, lambda: True)
+    button.info["className"] = "android.widget.TextView"
+    assert not SceneAssistant(advisor).open_rules(bridge, ui, lambda: True)
+    button.info["className"] = "android.widget.ImageView"
+    ui.device.move = True
     with pytest.raises(ValueError):
-        SceneAssistant(moved).open_rules(bridge, ui, lambda: True)
+        SceneAssistant(advisor).open_rules(bridge, ui, lambda: True)
     assert calls == ["rule"]
+
+
+def test_optional_ui_advisor_transient_status_is_typed_without_body_or_key_echo():
+    advisor = UIAdvisor(
+        "https://test.invalid/v1",
+        "test-model",
+        "PRIVATE_TEST_KEY",
+        httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(503, text="PRIVATE_SERVER_BODY"))
+        ),
+    )
+    with pytest.raises(UIAdvisorTemporaryError, match="HTTP503") as error:
+        advisor.advise(png())
+    assert "PRIVATE_SERVER_BODY" not in str(error.value)
+    assert "PRIVATE_TEST_KEY" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "tree",
+    [
+        '<hierarchy><node password="true"/></hierarchy>',
+        f'<hierarchy><node resource-id="{TARGET}:id/dialog_confirm"/></hierarchy>',
+        '<hierarchy><node resource-id="other:id/liveness"/></hierarchy>',
+        '<hierarchy><node visible-to-user="true" package="com.tencent.mobileqq"/></hierarchy>',
+    ],
+)
+def test_local_rules_zero_rejects_password_dialog_identity_and_foreign_overlay(tree, monkeypatch):
+    monkeypatch.setattr(
+        "budao.ui_advisor.parse_run_metrics",
+        lambda _: {
+            "distance_m": 0,
+            "elapsed_s": 0,
+            "completed_checkpoints": 0,
+            "counter_label": "已打卡",
+        },
+    )
+    monkeypatch.setattr(
+        "budao.ui_advisor.parse_run_control_state", lambda _: "not_started_or_countdown"
+    )
+    assert SceneAssistant._zero(tree) is False
 
 
 def test_config_outside_private_project_refused(tmp_path):

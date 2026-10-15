@@ -18,6 +18,7 @@ from budao.ui_advisor import (
     SceneAssistant,
     UIAdvice,
     UIAdvisor,
+    UIAdvisorTemporaryError,
     close_patch_stable,
     opaque_overlay_tree,
     verify_close_glyph,
@@ -178,6 +179,16 @@ def test_valid_close_sends_exactly_one_local_center_tap_after_fresh_validation()
     assert scene.close_ad(bridge, screen, lambda: True) is True
     assert screen.clicks == [CENTER]
     assert len(scene.client.requests) == 1
+
+
+def test_optional_ad_upstream_503_is_no_action_not_an_unverified_tap():
+    def unavailable():
+        raise UIAdvisorTemporaryError("界面模型HTTP503；没有执行动作")
+
+    scene = assistant(hook=unavailable)
+    screen = Screen([ad_image()], [OPAQUE])
+    assert scene.close_ad(Bridge(), screen, lambda: True) is False
+    assert len(scene.client.requests) == 1 and not screen.clicks
     assert scene.calls == 1
 
 

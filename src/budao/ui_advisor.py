@@ -22,7 +22,13 @@ from .auth_ui import MAIN
 from .models import PixelPoint, StrictModel
 from .mumu import MuMuBridge
 from .profiles import private_file
-from .target import RUN_ACTIVITY, TARGET, face_verification_required, parse_run_metrics
+from .target import (
+    RUN_ACTIVITY,
+    TARGET,
+    face_verification_required,
+    parse_run_control_state,
+    parse_run_metrics,
+)
 from .ui import focused_component
 from .vision import VisionClient
 
@@ -192,6 +198,10 @@ def redacted_ui_image(
     return out.getvalue()
 
 
+class UIAdvisorTemporaryError(RuntimeError):
+    """可选界面建议暂时不可用；无关闭动作，允许调用方继续有界观察。"""
+
+
 class UIAdvisor(VisionClient):
     @classmethod
     def from_private_config(cls, root: Path, path: Path):
@@ -258,6 +268,8 @@ class UIAdvisor(VisionClient):
             },
         )
         if response.status_code != 200:
+            if response.status_code in {429, 500, 502, 503, 504}:
+                raise UIAdvisorTemporaryError(f"界面模型HTTP{response.status_code}；没有执行动作")
             raise RuntimeError(f"界面模型HTTP{response.status_code}；没有执行动作")
         try:
             message = response.json()["choices"][0]["message"]
@@ -430,6 +442,24 @@ class SceneAssistant:
 
     @staticmethod
     def _zero(tree):
+        if len(tree) > 2 * 1024 * 1024 or "<!DOCTYPE" in tree.upper() or "<!ENTITY" in tree.upper():
+            return False
+        try:
+            nodes = list(ET.fromstring(tree).iter("node"))
+        except ET.ParseError:
+            return False
+        if any(
+            n.get("password") == "true"
+            or any(part in n.get("resource-id", "").lower() for part in _VERIFICATION_IDS)
+            or n.get("resource-id")
+            in {
+                TARGET + ":id/" + name
+                for name in ("alert_dialog_content", "dialog_confirm", "ad_close")
+            }
+            or (n.get("visible-to-user") == "true" and n.get("package") not in {TARGET, SYSTEMUI})
+            for n in nodes
+        ):
+            return False
         if face_verification_required(tree) or any(
             label in tree
             for label in ("人脸验证", "身份验证", "拍摄本人", "请输入密码", "请输入验证码")
@@ -441,6 +471,7 @@ class SceneAssistant:
             and view["elapsed_s"] == 0
             and view["completed_checkpoints"] == 0
             and view["counter_label"] == "已打卡"
+            and parse_run_control_state(tree) == "not_started_or_countdown"
         )
 
     def open_rules(self, bridge, ui, authorize):
@@ -461,41 +492,39 @@ class SceneAssistant:
         tree = ui.device.dump_hierarchy()
         if not self._zero(tree):
             raise ValueError("本人验证或非零记录不发送图片")
-        image = ui.screenshot()
-        after = ui.device.dump_hierarchy()
-        if (
-            not self._zero(after)
-            or focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != expected
-        ):
-            raise ValueError("截图期间页面改变，不发送")
-        png = redacted_ui_image(image, tree, after_hierarchy=after)
-        self.calls += 1
-        advice = self.client.advise(png)
-        if advice.action != "open_rules" or advice.confidence < 0.8 or advice.target is None:
-            return False
-        # 不执行模型的任意像素点击。像素须命中实际规则控件，再按本地资源ID点击。
-        sampled = time.monotonic()
-        if focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != expected:
-            raise ValueError("模型返回时前台已变化")
-        fresh = ui.device.dump_hierarchy()
-        if not self._zero(fresh):
-            raise ValueError("模型返回时已经不是零状态")
+        # 已现场核实的4.3.0规则控件无需上传图片或等模型；上游503不能阻断这一步。
+        # 仍只按唯一语义资源ID点击，绝不替换成模型任意坐标。
+        sampled = self.clock()
         button = ui.device(resourceId=TARGET + ":id/img_show_must_know_tip")
         if button.count != 1:
             return False
-        bounds = button.info["bounds"]
+        info = button.info
+        bounds = info.get("bounds", {})
         if not (
-            bounds["left"] <= advice.target.x <= bounds["right"]
-            and bounds["top"] <= advice.target.y <= bounds["bottom"]
+            info.get("className") == "android.widget.ImageView"
+            and info.get("enabled") is True
+            and info.get("clickable") is True
+            and set(bounds) == {"left", "right", "top", "bottom"}
+            and all(type(v) is int for v in bounds.values())
+            and 0 <= bounds["left"] < bounds["right"] <= 720
+            and 0 <= bounds["top"] < bounds["bottom"] <= 1280
+            and 24 <= bounds["right"] - bounds["left"] <= 160
+            and 24 <= bounds["bottom"] - bounds["top"] <= 160
         ):
             return False
+        fresh = ui.device.dump_hierarchy()
+        if not self._zero(fresh):
+            raise ValueError("规则控件读取后已经不是零状态")
         bridge.check_device()
         if (
             authorize() is not True
-            or time.monotonic() - sampled > 2
+            or not 0 <= self.clock() - sampled <= 2
             or focused_component(bridge.run("shell", "dumpsys", "window", "displays")) != expected
         ):
             raise ValueError("规则点击前许可或前台改变")
+        if button.count != 1 or button.info != info:
+            raise ValueError("规则控件读取后改变，不点击")
+        self.calls += 1
         button.click()
         return True  # 只表示已发送打开动作；实际规则仍由下一帧独立解析。
 
@@ -535,7 +564,10 @@ class SceneAssistant:
         png = redacted_ui_image(first, tree, after_hierarchy=after)
         first = Image.open(io.BytesIO(png)).convert("RGB")
         self.calls += 1
-        advice = self.client.advise(png)
+        try:
+            advice = self.client.advise(png)
+        except UIAdvisorTemporaryError:
+            return False  # 可选建议未产生动作；原调用者的次数/时间上限保持不变。
         if (
             advice.screen != "ad"
             or advice.action != "close_ad"
