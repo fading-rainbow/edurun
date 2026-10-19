@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from datetime import datetime
 
@@ -13,6 +14,7 @@ from .mumu import MuMuBridge
 from .target import (
     RUN_ACTIVITY,
     TARGET,
+    face_verification_required,
     parse_checkpoint_cards,
     parse_run_control_state,
     parse_run_metrics,
@@ -24,6 +26,59 @@ BEFORE = TARGET + ".activities.school_run.RunBeforeActivity"
 
 class RecordRecoveryRequired(ValueError):
     """没有显式绑定恢复凭据的记录提示；不能等待后盲点或当广告处理。"""
+
+
+def _optional_permission_tip(tree, *, confirmation=False):
+    """4.3.0现场的辅助权限建议，不把任意权限/身份对话框当作它。"""
+    expected = {
+        "tv_version_info": "必要权限未开启！",
+        "tv_content": "请先开启必要权限，以便于稳定、准确地记录您的运动轨迹！",
+        "tv_but2": "立即开启",
+        "tv_button": "暂不开启继续跑步",
+    }
+    if confirmation:
+        expected = {
+            "tv_version_info": "重要提示!",
+            "tv_content": (
+                "当前必要权限不完整，可能无法稳定、准确记录跑步轨迹，"
+                "可能会影响您的跑步记录。您仍可以坚持跑步，但建议保持程序前台运行，"
+                "保持屏幕常亮，以便记录成绩。\n"
+            ),
+            "tv_but2": "暂不开启，继续跑步",
+            "tv_button": "去开启",
+        }
+    if any(field(tree, key) != text for key, text in expected.items()):
+        return False
+    if (
+        field(tree, "alert_dialog_content") is not None
+        or field(tree, "dialog_confirm") is not None
+        or face_verification_required(tree)
+    ):
+        return False
+    return not any(
+        node.get("password") == "true"
+        or node.get("package", "") not in {"", TARGET, "com.android.systemui"}
+        for node in ET.fromstring(tree).iter("node")
+        if node.get("visible-to-user") == "true"
+    )
+
+
+def _location_permissions_ready(bridge):
+    """只读核对现有定位授权；不授予SDK无障碍/悬浮窗等额外权限。"""
+    meta = bridge.run("shell", "dumpsys", "package", TARGET)
+    for name in ("ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACCESS_BACKGROUND_LOCATION"):
+        matches = re.findall(
+            rf"^\s*android\.permission\.{name}: granted=(true|false)\b", meta, re.M
+        )
+        if matches != ["true"]:
+            return False
+    ops = bridge.run("shell", "cmd", "appops", "get", TARGET)
+    for name in ("FINE_LOCATION", "COARSE_LOCATION"):
+        if re.findall(rf"^\s*{name}: (\w+)\b", ops, re.M) != ["allow"]:
+            return False
+        if re.search(rf"^\s*Uid mode:.*\b{name}: (?!allow\b)", ops, re.M):
+            return False
+    return True
 
 
 def enter_formal_zero(
@@ -125,6 +180,7 @@ def enter_formal_zero(
     ad_attempts, last_close = 0, None
     entry_attempts, ad_interrupted_entry = 0, False
     returned_home_grades = []
+    permission_tip_stage = 0
     while clock() < deadline and authorize() is True:
         current = focus()
         progress(
@@ -156,6 +212,34 @@ def enter_formal_zero(
             if pause_expected is None and field(tree, "dialog_confirm") == "恢复":
                 progress("record_recovery_requires_user")
                 raise RecordRecoveryRequired("原App显示恢复提示；未恢复、放弃或开始新记录")
+            permission_title = field(tree, "tv_version_info")
+            if permission_title in {"必要权限未开启！", "重要提示!"}:
+                confirmation = permission_title == "重要提示!"
+                if (
+                    not entered
+                    or pause_expected is not None
+                    or safety_confirmed
+                    or permission_tip_stage != int(confirmation)
+                    or not _optional_permission_tip(tree, confirmation=confirmation)
+                    or not _location_permissions_ready(bridge)
+                ):
+                    progress("permission_tip_requires_user")
+                    raise ValueError("运动定位权限或本次权限提示未确认；未授权额外权限或开始")
+                name, label = (
+                    ("tv_but2", "暂不开启，继续跑步")
+                    if confirmation
+                    else ("tv_button", "暂不开启继续跑步")
+                )
+                if not click(name, label, current):
+                    continue
+                permission_tip_stage += 1
+                progress(
+                    "optional_permission_confirmation_continued"
+                    if confirmation
+                    else "optional_permission_tip_continued"
+                )
+                sleep(0.2)
+                continue
             close = ui.device(resourceId=TARGET + ":id/ad_close", description="关闭")
             if close.count == 1:
                 ad_interrupted_entry |= entered
