@@ -169,10 +169,13 @@ def test_native_recovery_brings_existing_task_via_exported_launcher_not_run_acti
     assert TARGET + "/" + RUN_ACTIVITY not in starts[0]
 
 
-def test_cross_day_resume_evidence_reports_expired_record_in_login_and_preflight(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("clock_expired", [False, True])
+def test_expired_resume_evidence_reports_specific_fixed_reason_in_login_and_preflight(
+    tmp_path, monkeypatch, clock_expired
 ):
     from test_raw_motion import clip
+
+    from budao.resume import PAUSE_CLOCK_DETAIL, PauseClockExpired
 
     directory = tmp_path / ".local"
     directory.mkdir()
@@ -182,6 +185,8 @@ def test_cross_day_resume_evidence_reports_expired_record_in_login_and_preflight
     runtime = LiveRuntime(tmp_path, Path(".local/profile.json"), Path(".local/run.json"))
 
     def expired_ticket(_bridge):
+        if clock_expired:
+            raise PauseClockExpired("private details must not reach public report")
         raise ValueError("暂停会话已跨日")
 
     monkeypatch.setattr(runtime, "_resume_ticket", expired_ticket)
@@ -207,9 +212,10 @@ def test_cross_day_resume_evidence_reports_expired_record_in_login_and_preflight
 
     b = DeviceBridge()
     login_result = runtime.prepare_login(b)
+    expected_detail = PAUSE_CLOCK_DETAIL if clock_expired else "过期记录，需用户处理"
     assert login_result == {
-        "state": "expired_record",
-        "detail": "过期记录，需用户处理",
+        "state": "pause_clock_expired" if clock_expired else "expired_record",
+        "detail": expected_detail,
         "server_auth_proven": False,
     }
 
@@ -218,7 +224,7 @@ def test_cross_day_resume_evidence_reports_expired_record_in_login_and_preflight
         "app_confirmed_approaches": 1,
     }
     preflight_result = runtime.preflight(route_info, b)
-    assert preflight_result["runtime"] == ("not_ready", "过期记录，需用户处理")
+    assert preflight_result["runtime"] == ("not_ready", expected_detail)
 
 
 def test_restored_pause_persisted_and_used_in_build(tmp_path, monkeypatch):

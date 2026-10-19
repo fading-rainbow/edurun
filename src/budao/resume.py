@@ -13,6 +13,12 @@ from .runtime import CapturedRunFrame, StartWitness
 from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET
 from .ui import focused_component
 
+PAUSE_CLOCK_DETAIL = "暂停证据时钟已失效，需用户处理"
+
+
+class PauseClockExpired(ValueError):
+    """主机重启等原因使旧单调时钟不可比较；不能重写历史帧时间续接。"""
+
 
 class ResumeWitness(StrictModel):
     original: StartWitness

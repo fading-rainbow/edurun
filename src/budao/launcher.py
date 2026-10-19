@@ -13,6 +13,7 @@ from .auth_ui import prepare_current_login
 from .execution import ExecutionCoordinator
 from .mumu import MuMuBridge
 from .profiles import preflight_profile, private_file
+from .resume import PAUSE_CLOCK_DETAIL
 
 
 class PreparationCoordinator:
@@ -99,6 +100,10 @@ class PreparationCoordinator:
                 login.get("state") == "expired_record"
                 and login.get("detail") == "过期记录，需用户处理"
             )
+            stale_pause_login = (
+                login.get("state") == "pause_clock_expired"
+                and login.get("detail") == PAUSE_CLOCK_DETAIL
+            )
             item(
                 "login",
                 "乐跑QQ／微信授权",
@@ -108,7 +113,11 @@ class PreparationCoordinator:
                 else (
                     "过期记录，需用户处理"
                     if expired_login
-                    else "当前客户端登录界面未确认；已有会话/必要认证不被覆盖"
+                    else (
+                        PAUSE_CLOCK_DETAIL
+                        if stale_pause_login
+                        else "当前客户端登录界面未确认；已有会话/必要认证不被覆盖"
+                    )
                 ),
             )
             item("motion", "自然运动输入", "not_ready", "MuMu自然步频尚未实际验收")
@@ -134,12 +143,21 @@ class PreparationCoordinator:
                         }[check["key"]]
             ready = all(check["state"] == "pass" for check in checks)
             expired = any(check.get("detail") == "过期记录，需用户处理" for check in checks)
+            stale_pause = any(check.get("detail") == PAUSE_CLOCK_DETAIL for check in checks)
             self.last_report = {
                 "state": "ready" if ready else "blocked",
                 "message": (
                     "本次有界执行准备通过，尚未开始"
                     if ready
-                    else ("过期记录，需用户处理" if expired else "准备条件尚未全部通过，未开始乐跑")
+                    else (
+                        "过期记录，需用户处理"
+                        if expired
+                        else (
+                            PAUSE_CLOCK_DETAIL
+                            if stale_pause
+                            else "准备条件尚未全部通过，未开始乐跑"
+                        )
+                    )
                 ),
                 "checks": checks,
                 "ready": ready,

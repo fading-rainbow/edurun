@@ -31,7 +31,7 @@ from .mumu_driver import MuMuPositionWorker
 from .portal import enter_formal_zero
 from .profiles import RunProfile, _load, preflight_profile, private_file
 from .raw_motion import match_recorded_snapshot, prepare_recorded_probe
-from .resume import resume_once
+from .resume import PAUSE_CLOCK_DETAIL, PauseClockExpired, resume_once
 from .routes import RoutePlanner
 from .runtime import CapturedRunFrame, RuntimeDispatcher, StartWitness
 from .sensor_probe import NORMAL, sensor_mode
@@ -324,7 +324,6 @@ class LiveRuntime:
             or not 0 < saved.inspection.elapsed_s < 1800
             or not pause_progress_matches(status, saved.inspection)
             or saved.sampled_at <= witness.second_running.sampled_at
-            or not 0 <= time.monotonic() - saved.sampled_at < 86400
         ):
             raise ValueError("只续接本助手已清理并确认暂停的零打卡记录")
         meta_path = directory / "session-meta.json"
@@ -349,6 +348,8 @@ class LiveRuntime:
             grade = None
         if bridge.run("shell", "date", "+%F").strip() != stamp.strftime("%Y-%m-%d"):
             raise ValueError("暂停会话已跨日")
+        if not 0 <= time.monotonic() - saved.sampled_at < 86400:
+            raise PauseClockExpired(PAUSE_CLOCK_DETAIL)
         return directory, witness, saved, stamp, grade
 
     def prepare_login(self, bridge):
@@ -370,6 +371,12 @@ class LiveRuntime:
                     scene.client.close()
         try:
             directory, original, saved, stamp, _ = self._resume_ticket(bridge)
+        except PauseClockExpired:
+            return {
+                "state": "pause_clock_expired",
+                "detail": PAUSE_CLOCK_DETAIL,
+                "server_auth_proven": False,
+            }
         except ValueError as error:
             if "跨日" in str(error):
                 return {
@@ -479,6 +486,9 @@ class LiveRuntime:
         if self.settings.resume_evidence is not None:
             try:
                 self._resume_ticket(bridge)
+            except PauseClockExpired:
+                runtime_ok = False
+                runtime_detail = PAUSE_CLOCK_DETAIL
             except ValueError as error:
                 if "跨日" in str(error):
                     runtime_ok = False

@@ -8,6 +8,7 @@ import secrets
 import threading
 
 from .finish_connector import FinishEvidence
+from .resume import PAUSE_CLOCK_DETAIL
 from .session_runner import SessionRunner
 
 MESSAGES = {
@@ -203,6 +204,9 @@ class ExecutionCoordinator:
                     check.get("detail") == "过期记录，需用户处理"
                     for check in report.get("checks", [])
                 )
+                stale_pause = any(
+                    check.get("detail") == PAUSE_CLOCK_DETAIL for check in report.get("checks", [])
+                )
                 self._set(
                     self.status()
                     | {
@@ -211,7 +215,11 @@ class ExecutionCoordinator:
                         "message": (
                             "过期记录，需用户处理"
                             if expired
-                            else "准备或执行组件未就绪；未开始乐跑"
+                            else (
+                                PAUSE_CLOCK_DETAIL
+                                if stale_pause
+                                else "准备或执行组件未就绪；未开始乐跑"
+                            )
                         ),
                     }
                 )

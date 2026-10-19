@@ -9,6 +9,7 @@ from test_resume import proof
 from test_runtime import frame, witness
 
 from budao.live_runtime import LiveRuntime, RuntimeSettings, resume_trace_sources
+from budao.resume import PAUSE_CLOCK_DETAIL, PauseClockExpired
 
 
 def write(path, value):
@@ -160,3 +161,20 @@ def test_missing_previous_continue_witness_never_allows_retry(clean_error_record
     (child / "resume-witness.json").unlink()
     with pytest.raises(OSError):
         runtime._resume_ticket(bridge)
+
+
+@pytest.mark.parametrize("now", [10, 86431])
+def test_previous_clock_epoch_or_expired_pause_is_explicit_not_retimestamped(
+    clean_error_record, monkeypatch, now
+):
+    runtime, bridge, child, _ = clean_error_record
+    before = (child / "frames.jsonl").read_bytes()
+    monkeypatch.setattr("budao.live_runtime.time.monotonic", lambda: now)
+    with pytest.raises(PauseClockExpired, match=PAUSE_CLOCK_DETAIL):
+        runtime._resume_ticket(bridge)
+    assert runtime.prepare_login(bridge) == {
+        "state": "pause_clock_expired",
+        "detail": PAUSE_CLOCK_DETAIL,
+        "server_auth_proven": False,
+    }
+    assert (child / "frames.jsonl").read_bytes() == before
