@@ -11,6 +11,7 @@ from collections.abc import Callable
 from .android import DIAGNOSTIC_PACKAGE
 from .foreground_motion import ForegroundMotionClient
 from .gps_reception import received_gps_matches
+from .portal import RecordRecoveryRequired
 from .raw_motion import RecordedProbeClip
 from .runtime import RuntimeDispatcher
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
@@ -362,15 +363,16 @@ class SessionRunner:
         except Exception as error:
             self.private_failure = {"type": type(error).__name__, "detail": str(error)}
             report.pop("preparation_phase", None)
+            message = "单次编排中断；不重复开始，不回显私有异常"
             if isinstance(error, GPSReadinessTimeout):
                 report["preparation_phase"] = "gps_timeout"
+                message = "定位就绪等待超时；未点击开始，未提交记录"
+            elif isinstance(error, RecordRecoveryRequired):
+                report["preparation_phase"] = "record_recovery"
+                message = "原App有恢复记录提示，需本人处理；未开始新的乐跑"
             report.update(
                 state="paused" if cancel.is_set() else "error",
-                message=(
-                    "定位就绪等待超时；未点击开始，未提交记录"
-                    if isinstance(error, GPSReadinessTimeout)
-                    else "单次编排中断；不重复开始，不回显私有异常"
-                ),
+                message=message,
             )
         finally:
             try:

@@ -114,6 +114,12 @@ class ExecutionCoordinator:
                 and value.get("start_action_attempted") is False
             ):
                 public["message"] = "定位就绪等待超时；未点击开始，未提交记录"
+            elif (
+                state == "error"
+                and value.get("preparation_phase") == "record_recovery"
+                and value.get("start_action_attempted") is False
+            ):
+                public["message"] = "原App有恢复记录提示，需本人处理；未开始新的乐跑"
         proof = value.get("finish_evidence")
         if state in {"accepted", "submitted_unconfirmed"}:
             if (

@@ -197,6 +197,33 @@ def test_gps_progress_only_allows_fixed_text_and_truthful_unstarted_state(
     assert "PRIVATE_SENSITIVE" not in str(result) and "preparation_phase" not in result
 
 
+@pytest.mark.parametrize(
+    "started,attempted,specific",
+    [
+        (False, False, True),
+        (True, False, False),
+        (False, True, False),
+        (False, None, False),
+    ],
+)
+def test_record_prompt_message_is_fixed_and_only_for_unstarted_flow(started, attempted, specific):
+    c = ExecutionCoordinator(Preparation())
+    c._publish_runner(
+        {
+            "state": "error",
+            "preparation_phase": "record_recovery",
+            "run_started": started,
+            "records_submitted": 0,
+            "record_valid_proven": False,
+            "message": "PRIVATE_SENSITIVE",
+            **({"start_action_attempted": attempted} if attempted is not None else {}),
+        }
+    )
+    report = c.status()
+    assert ("恢复记录提示" in report["message"]) is specific
+    assert "PRIVATE_SENSITIVE" not in str(report) and "preparation_phase" not in report
+
+
 @pytest.mark.parametrize("change", [{"ready": 1}, {"records_submitted": True}, {"checks": []}])
 def test_eligible_preparation_requires_exact_booleans_and_all_distinct_gates(change):
     result = Preparation().check(True)

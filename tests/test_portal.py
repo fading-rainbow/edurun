@@ -6,7 +6,7 @@ import pytest
 
 from budao.auth_ui import MAIN
 from budao.mumu import MuMuBridge
-from budao.portal import BEFORE, enter_formal_zero
+from budao.portal import BEFORE, RecordRecoveryRequired, enter_formal_zero
 from budao.target import RUN_ACTIVITY, TARGET
 
 
@@ -165,6 +165,74 @@ def test_entry_staying_home_without_observed_ad_is_not_blindly_retried():
             b, lambda: True, ui_factory=DroppedEntryUI, clock=clock, sleep=lambda _: None
         )
     assert b.clicks == ["tv_run", "tv_enterRun"]
+
+
+@pytest.mark.parametrize("after_entry", [False, True])
+def test_fresh_flow_record_popup_stops_without_restore_discard_or_ad_click(after_entry):
+    now, events = [0.0], []
+
+    class RecoveryUI(UI):
+        def __call__(self, **kwargs):
+            result = super().__call__(**kwargs)
+            name = kwargs.get("resourceId", "").split("/")[-1]
+            if self.bridge.phase == "dialog" and name == "ad_close":
+                result.count = 1  # A background close button must not override the record prompt.
+            if name == "tv_enterRun":
+
+                def click():
+                    self.bridge.clicks.append(name)
+                    self.bridge.phase, self.bridge.focus = "dialog", MAIN
+
+                result.click = click
+            return result
+
+        def dump_hierarchy(self):
+            if self.bridge.phase == "dialog":
+                return (
+                    f'<hierarchy><node package="{TARGET}" visible-to-user="true" '
+                    f'resource-id="{TARGET}:id/alert_dialog_content" text="PRIVATE_SENSITIVE"/>'
+                    f'<node package="{TARGET}" visible-to-user="true" '
+                    f'resource-id="{TARGET}:id/dialog_confirm" text="恢复"/></hierarchy>'
+                )
+            return super().dump_hierarchy()
+
+    def clock():
+        now[0] += 0.1
+        return now[0]
+
+    b = Bridge()
+    if not after_entry:
+        b.phase = "dialog"
+    with pytest.raises(RecordRecoveryRequired) as error:
+        enter_formal_zero(
+            b,
+            lambda: True,
+            ui_factory=RecoveryUI,
+            clock=clock,
+            sleep=lambda _: None,
+            on_progress=events.append,
+        )
+    assert b.clicks == (["tv_run", "tv_enterRun"] if after_entry else [])
+    assert now[0] < 15 and "PRIVATE_SENSITIVE" not in str(error.value)
+    assert events[-1]["event"] == "record_recovery_requires_user"
+    assert "PRIVATE_SENSITIVE" not in str(events)
+
+
+def test_unknown_home_dialog_is_not_silently_waited_or_clicked_through():
+    class DialogUI(UI):
+        def dump_hierarchy(self):
+            return (
+                f'<hierarchy><node package="{TARGET}" visible-to-user="true" '
+                f'resource-id="{TARGET}:id/alert_dialog_content" text="PRIVATE_SENSITIVE"/>'
+                f'<node package="{TARGET}" visible-to-user="true" '
+                f'resource-id="{TARGET}:id/dialog_confirm" text="确定"/></hierarchy>'
+            )
+
+    b, events = Bridge(), []
+    with pytest.raises(ValueError, match="首页有未确认") as error:
+        enter_formal_zero(b, lambda: True, ui_factory=DialogUI, on_progress=events.append)
+    assert not b.clicks and "PRIVATE_SENSITIVE" not in str(error.value)
+    assert events[-1]["event"] == "home_dialog_requires_user"
 
 
 def test_formal_window_closed_is_not_clicked_or_treated_as_free_run():

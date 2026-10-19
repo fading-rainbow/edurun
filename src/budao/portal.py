@@ -22,6 +22,10 @@ from .ui import KNOWN_AD_COMPONENT, AppUI, dismiss_known_ad, focused_component
 BEFORE = TARGET + ".activities.school_run.RunBeforeActivity"
 
 
+class RecordRecoveryRequired(ValueError):
+    """没有显式绑定恢复凭据的记录提示；不能等待后盲点或当广告处理。"""
+
+
 def enter_formal_zero(
     bridge: MuMuBridge,
     authorize: Callable[[], bool],
@@ -149,6 +153,9 @@ def enter_formal_zero(
             sleep(0.2)
             continue  # 丢弃旧树；正常异步切页不能变成错误，更不能用旧树点击。
         if current == (TARGET, MAIN):
+            if pause_expected is None and field(tree, "dialog_confirm") == "恢复":
+                progress("record_recovery_requires_user")
+                raise RecordRecoveryRequired("原App显示恢复提示；未恢复、放弃或开始新记录")
             close = ui.device(resourceId=TARGET + ":id/ad_close", description="关闭")
             if close.count == 1:
                 ad_interrupted_entry |= entered
@@ -229,6 +236,12 @@ def enter_formal_zero(
                 safety_confirmed = True
                 ad_interrupted_entry = False
                 returned_home_grades.clear()
+            elif (
+                field(tree, "alert_dialog_content") is not None
+                or field(tree, "dialog_confirm") is not None
+            ):
+                progress("home_dialog_requires_user")
+                raise ValueError("首页有未确认的记录或认证提示；未发送其他动作")
             elif not run_selected:
                 if not click("tv_run", "乐跑", current):
                     continue

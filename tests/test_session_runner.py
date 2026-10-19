@@ -217,6 +217,23 @@ def test_denied_start_never_attempts_start_or_enters_injection(tmp_path):
     assert not any("data_injection" in call for call in b.calls)
 
 
+def test_record_recovery_guard_emits_fixed_reason_without_starting_input(tmp_path):
+    from budao.portal import RecordRecoveryRequired
+
+    r, b, c, _d, m = setup(tmp_path)
+
+    def blocked(_authorize):
+        raise RecordRecoveryRequired("PRIVATE_SENSITIVE")
+
+    r.prepare_start = blocked
+    result = r.run(lambda: True, lambda _: None)
+    assert result["preparation_phase"] == "record_recovery"
+    assert result["message"] == "原App有恢复记录提示，需本人处理；未开始新的乐跑"
+    assert "PRIVATE_SENSITIVE" not in str(result)
+    assert not result["run_started"] and not result["start_action_attempted"]
+    assert "begin" not in c.calls and "prepare" not in m.calls and b.mode == NORMAL
+
+
 def test_same_anchor_bootstrap_is_after_real_witness_and_mode_before_motion_start(tmp_path):
     r, b, c, d, m = setup(tmp_path)
     pulses = []
