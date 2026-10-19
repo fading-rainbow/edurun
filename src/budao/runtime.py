@@ -254,6 +254,15 @@ class RuntimeDispatcher:
             or not 0 <= self.clock() - proof.second_running.sampled_at < 2
         ):
             raise ValueError("续跑证据过期或线程/设备不匹配")
+        assigned = [
+            p for p in proof.second_running.inspection.checkpoint_cards if p.state == "assigned"
+        ]
+        target = None
+        if assigned:
+            name = assigned[0].name
+            if name not in self.observer.allowed_names:
+                raise ValueError("继续凭据的已分配点尚未通过本机地图/目录核对")
+            target = self.observer.navigation_point(name)
         self.worker.start()
         if not 0 <= self.clock() - proof.second_running.sampled_at < 2:
             self.worker.stop()
@@ -263,6 +272,10 @@ class RuntimeDispatcher:
         self.controller.last_elapsed_s = current.inspection.elapsed_s
         self.controller.distance_m = current.inspection.distance_m
         self.controller.seen_named_frames.update(f.frame_id for f in proof.frames)
+        if target is not None:
+            # ResumeWitness已有独立两帧相同卡片；只继承目标身份，不授权运动。
+            # 下一张新的运行帧仍须通过GPS/新鲜度/接收及道路守卫才会下发路线。
+            self.controller.active, self.controller.active_name = target, assigned[0].name
         self.started = True
 
     def stop(self):

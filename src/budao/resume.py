@@ -43,7 +43,7 @@ class ResumeWitness(StrictModel):
             raise ValueError("暂停凭据不是原生开始后的本次运行页")
         previous = self.saved_pause.sampled_at
         ids = {self.saved_pause.frame_id}
-        for frame in self.frames:
+        for index, frame in enumerate(self.frames):
             v = frame.inspection
             if (
                 frame.frame_id in ids
@@ -52,7 +52,8 @@ class ResumeWitness(StrictModel):
                 or v.activity != RUN_ACTIVITY
                 or v.version != "4.3.0"
                 or v.state != "metrics"
-                or v.gps_label != GPS_READY_LABEL
+                or v.gps_label
+                not in ({GPS_READY_LABEL} if index < 2 else {GPS_READY_LABEL, "GPS信号弱"})
                 or v.counter_label != "已打卡"
                 or v.completed_checkpoints != 0
                 or v.distance_m != saved.distance_m

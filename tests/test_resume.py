@@ -116,3 +116,35 @@ def test_changed_current_pause_refuses_continue(tmp_path):
     with pytest.raises(ValueError):
         resume_once(c, p.original, p.saved_pause, datetime(2026, 10, 14), lambda: True)
     assert not list(tmp_path.iterdir())
+
+
+def test_post_continue_weak_signal_proves_timer_but_does_not_arm_movement(runtime_setup):
+    data = proof().model_dump()
+    for key in ("first_running", "second_running"):
+        data[key]["inspection"]["gps_label"] = "GPS信号弱"
+    p = ResumeWitness.model_validate(data)
+    d, w, b, clock, _ = runtime_setup
+    clock[0] = 23
+    d.resume(p)
+    assert d.started and not w.engine.enabled and not b.locations
+
+
+@pytest.mark.parametrize("key", ["first_paused", "second_paused"])
+def test_continue_still_requires_ready_pre_action_observations(key):
+    data = proof().model_dump()
+    data[key]["inspection"]["gps_label"] = "GPS信号弱"
+    with pytest.raises(ValueError):
+        ResumeWitness.model_validate(data)
+
+
+def test_assigned_target_is_inherited_from_actual_two_frame_resume_without_arming(runtime_setup):
+    data = proof().model_dump()
+    for key in ("saved_pause", "first_paused", "second_paused", "first_running", "second_running"):
+        data[key]["inspection"]["checkpoint_cards"] = [
+            {"number": 1, "state": "assigned", "name": "点4", "distance_m": 120}
+        ]
+    p = ResumeWitness.model_validate(data)
+    d, w, b, clock, _ = runtime_setup
+    clock[0] = 23
+    d.resume(p)
+    assert d.controller.active_name == "点4" and not w.engine.enabled and not b.locations
