@@ -132,6 +132,32 @@ def test_start_revalidates_copied_witness_and_rejects_wrong_or_stale_device(setu
     assert not dispatcher.started
 
 
+def test_real_timer_start_can_be_proven_with_weak_post_start_gps_but_never_arms_drive(setup):
+    data = witness().model_dump()
+    for key in ("first_running", "second_running"):
+        data[key]["inspection"]["gps_label"] = "GPS信号弱"
+    proof = StartWitness.model_validate(data)
+    dispatcher, worker, bridge, clock, _config = setup
+    dispatcher.start(proof)
+    worker._tick()
+    assert dispatcher.started and not worker.engine.enabled and not bridge.locations
+    clock[0] = 3
+    weak = frame(3).model_copy(
+        update={"inspection": frame(3).inspection.model_copy(update={"gps_label": "GPS信号弱"})}
+    )
+    assert dispatcher.update(weak).action == "pause"
+    worker._tick()
+    assert not worker.engine.enabled and not bridge.locations
+
+
+@pytest.mark.parametrize("key,label", [("before", "GPS信号弱"), ("first_running", "UNKNOWN")])
+def test_timer_proof_still_requires_ready_pre_click_gps_and_known_post_click_state(key, label):
+    data = witness().model_dump()
+    data[key]["inspection"]["gps_label"] = label
+    with pytest.raises(ValueError):
+        StartWitness.model_validate(data)
+
+
 def test_duplicate_start_rejected_without_new_driver_start(setup):
     dispatcher, *_ = setup
     dispatcher.start(witness())

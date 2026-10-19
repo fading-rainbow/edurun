@@ -304,9 +304,11 @@ class StartConnector:
             if (
                 view.run_control_state != "running"
                 or not view.elapsed_s
-                or view.gps_label != GPS_READY_LABEL
+                or view.gps_label not in {GPS_READY_LABEL, "GPS信号弱"}
             ):
                 continue
+            # 开始动作前仍须GPS优+本任务实收；动作后递增计时证明的是已经开始，
+            # 不能因信号暂弱否认真实计时。运动/路线仍须另取新的优信号及实收许可。
             if first is None:
                 first = frame
             elif view.elapsed_s > first.inspection.elapsed_s:

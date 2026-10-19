@@ -120,6 +120,12 @@ class ExecutionCoordinator:
                 and value.get("start_action_attempted") is False
             ):
                 public["message"] = "原App有恢复记录提示，需本人处理；未开始新的乐跑"
+        elif (
+            state == "error"
+            and value.get("preparation_phase") == "post_start_gps_timeout"
+            and value.get("start_action_attempted") is True
+        ):
+            public["message"] = "新开始已确认，定位接续超时；输入已停止并保留记录"
         proof = value.get("finish_evidence")
         if state in {"accepted", "submitted_unconfirmed"}:
             if (

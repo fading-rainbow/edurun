@@ -20,6 +20,10 @@ from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, TargetInspection
 from .ui import KNOWN_AD_COMPONENT, dismiss_known_ad, focused_component
 
 
+class PostStartGPSReadinessTimeout(ValueError):
+    """实际开始后同锚点定位未就绪；不能报告为尚未点击开始。"""
+
+
 class SessionRunner:
     """只开始一份新会话；已有记录、失败开始或到期任务不被自动重试/接管。"""
 
@@ -92,7 +96,7 @@ class SessionRunner:
         self.started = False
         self.lock = threading.Lock()
 
-    def _eligible_motion(self, view: TargetInspection) -> bool:
+    def _eligible_motion(self, view: TargetInspection, *, allow_weak_gps: bool = False) -> bool:
         """只判断控件/顺序，不构造可用于驱动的观察帧或开始证据。"""
         c = self.dispatcher.controller
         cards = view.checkpoint_cards
@@ -103,7 +107,8 @@ class SessionRunner:
         if (
             view.state != "metrics"
             or view.run_control_state != "running"
-            or view.gps_label != GPS_READY_LABEL
+            or view.gps_label
+            not in ({GPS_READY_LABEL, "GPS信号弱"} if allow_weak_gps else {GPS_READY_LABEL})
             or view.counter_label != "已打卡"
             or view.elapsed_s is None
             or view.elapsed_s <= 0
@@ -122,6 +127,43 @@ class SessionRunner:
             return c.active_name is not None and names[-1] == c.active_name
         assigned = [card for card in cards if card.state == "assigned"]
         return c.active_name is None or (len(assigned) == 1 and assigned[0].name == c.active_name)
+
+    def _initial_motion_frame(self, proof, cancel, authorize):
+        """有真实开始凭据后有界等待定位；只刷新同一锚点，不启动输入/路线。"""
+        deadline = self.clock() + 10
+        previous = proof.second_running.inspection
+
+        def permitted():
+            return self.clock() < deadline and not cancel.is_set() and authorize() is True
+
+        while permitted():
+            if self.refresh_started_gps is not None:
+                self.refresh_started_gps(proof, permitted)
+            cap = self.connector.capture(motion_request=self.motion.request)
+            v = cap.frame.inspection
+            if cancel.is_set() or authorize() is not True:
+                raise ValueError("开始后的输入许可已撤销")
+            if self.clock() >= deadline:
+                break
+            if (
+                not self._eligible_motion(v, allow_weak_gps=True)
+                or v.distance_m != previous.distance_m
+                or v.checkpoint_cards != previous.checkpoint_cards
+                or not previous.elapsed_s <= v.elapsed_s <= previous.elapsed_s + 15
+                or not 0 <= self.clock() - cap.frame.sampled_at < 2
+            ):
+                raise ValueError("开始后的会话、计时或许可改变；不启动输入")
+            if self._eligible_motion(v) and received_gps_matches(
+                cap.motion_snapshot,
+                self.motion.request,
+                cap.android_observed_ns,
+                self.dispatcher.worker.engine.position,
+            ):
+                return cap
+            if self.refresh_started_gps is None:
+                break
+            self.sleep(0.1)
+        raise PostStartGPSReadinessTimeout("新开始后定位接续未就绪；不授权输入或路线")
 
     def run(
         self, authorize: Callable[[], bool], publish: Callable[[dict], None], cancel=None
@@ -214,22 +256,7 @@ class SessionRunner:
                 != INJECTION
             ):
                 raise ValueError("未确认自有输入模式")
-            if self.refresh_started_gps is not None:
-                self.refresh_started_gps(
-                    witness, lambda: not cancel.is_set() and authorize() is True
-                )
-            initial = self.connector.capture(motion_request=self.motion.request)
-            if (
-                not self._eligible_motion(initial.frame.inspection)
-                or not received_gps_matches(
-                    initial.motion_snapshot,
-                    self.motion.request,
-                    initial.android_observed_ns,
-                    self.dispatcher.worker.engine.position,
-                )
-                or cancel.is_set()
-            ):
-                raise ValueError("开始后没有本次允许观察")
+            initial = self._initial_motion_frame(witness, cancel, authorize)
             self.motion.start(initial.android_observed_ns)
             deadline = self.clock() + self.maximum_s
             window_deadline = self.clock() + 600
@@ -370,6 +397,9 @@ class SessionRunner:
             elif isinstance(error, RecordRecoveryRequired):
                 report["preparation_phase"] = "record_recovery"
                 message = "原App有恢复记录提示，需本人处理；未开始新的乐跑"
+            elif isinstance(error, PostStartGPSReadinessTimeout):
+                report["preparation_phase"] = "post_start_gps_timeout"
+                message = "新开始已确认，定位接续超时；输入已停止并保留记录"
             report.update(
                 state="paused" if cancel.is_set() else "error",
                 message=message,

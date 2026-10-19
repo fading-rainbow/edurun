@@ -23,7 +23,7 @@ class CapturedRunFrame(StrictModel):
 
 
 class StartWitness(StrictModel):
-    """真实开始适配器须提供的因果证据，不得用旧截图/按钮组合自动填写。"""
+    """真实计时开始的因果证据；不替代另外的实时定位/输入许可。"""
 
     request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
     serial: str = Field(pattern=r"^127\.0\.0\.1:[1-9]\d{3,4}$")
@@ -43,6 +43,7 @@ class StartWitness(StrictModel):
             or not self.before.sampled_at < self.action_at < self.first_running.sampled_at
             or not self.first_running.sampled_at < self.second_running.sampled_at
             or self.second_running.sampled_at - self.before.sampled_at > 15
+            or self.before.inspection.gps_label != GPS_READY_LABEL
         ):
             raise ValueError("缺少独立的新会话开始因果证据；不从旧运行页推断开始")
         for frame in frames:
@@ -53,7 +54,7 @@ class StartWitness(StrictModel):
                 or v.version != "4.3.0"
                 or v.state != "metrics"
                 or v.counter_label != "已打卡"
-                or v.gps_label != GPS_READY_LABEL
+                or v.gps_label not in {GPS_READY_LABEL, "GPS信号弱"}
                 or v.completed_checkpoints != 0
                 or v.distance_m is None
                 or not 0 <= v.distance_m <= 25

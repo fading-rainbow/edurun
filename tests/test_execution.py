@@ -224,6 +224,27 @@ def test_record_prompt_message_is_fixed_and_only_for_unstarted_flow(started, att
     assert "PRIVATE_SENSITIVE" not in str(report) and "preparation_phase" not in report
 
 
+@pytest.mark.parametrize(
+    "started,attempted,specific", [(True, True, True), (True, False, False), (False, True, False)]
+)
+def test_post_start_timeout_cannot_be_reported_as_not_started(started, attempted, specific):
+    c = ExecutionCoordinator(Preparation())
+    c._publish_runner(
+        {
+            "state": "error",
+            "preparation_phase": "post_start_gps_timeout",
+            "run_started": started,
+            "start_action_attempted": attempted,
+            "records_submitted": 0,
+            "record_valid_proven": False,
+            "message": "PRIVATE_SENSITIVE",
+        }
+    )
+    report = c.status()
+    assert ("定位接续超时" in report["message"]) is specific
+    assert "未点击开始" not in report["message"] and "PRIVATE_SENSITIVE" not in str(report)
+
+
 @pytest.mark.parametrize("change", [{"ready": 1}, {"records_submitted": True}, {"checks": []}])
 def test_eligible_preparation_requires_exact_booleans_and_all_distinct_gates(change):
     result = Preparation().check(True)

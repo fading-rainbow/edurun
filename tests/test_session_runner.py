@@ -249,6 +249,120 @@ def test_same_anchor_bootstrap_is_after_real_witness_and_mode_before_motion_star
     assert result["state"] == "finish_ready" and pulses == ["same_anchor_only"]
 
 
+def test_post_start_weak_signal_waits_boundedly_for_real_ready_frame_before_input(
+    tmp_path, monkeypatch
+):
+    r, b, c, d, m = setup(tmp_path)
+    capture, start = c.capture, m.start
+    observed, refreshes = [], []
+
+    def refresh(proof, authorize):
+        assert proof == witness() and authorize() is True
+        assert b.mode == INJECTION and not m.started and "update" not in d.calls
+        refreshes.append("same_anchor")
+
+    def transient(**kwargs):
+        cap = capture(**kwargs)
+        if c.last_action_request is not None and not m.started and not c.paused:
+            label = "GPS信号弱" if len(observed) < 2 else "GPS信号优"
+            observed.append(label)
+            return RunCapture(
+                cap.frame.model_copy(
+                    update={
+                        "inspection": cap.frame.inspection.model_copy(update={"gps_label": label})
+                    }
+                ),
+                cap.hierarchy,
+                cap.screenshot,
+                cap.android_observed_ns,
+                cap.motion_snapshot,
+            )
+        return cap
+
+    def input_start(ns):
+        assert observed == ["GPS信号弱", "GPS信号弱", "GPS信号优"]
+        start(ns)
+
+    r.refresh_started_gps = refresh
+    monkeypatch.setattr(c, "capture", transient)
+    monkeypatch.setattr(m, "start", input_start)
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "finish_ready" and c.calls.count("begin") == 1
+    assert refreshes == ["same_anchor"] * 3
+
+
+def test_post_start_missing_reception_expires_without_motion_route_or_repeat_start(
+    tmp_path, monkeypatch
+):
+    r, _b, c, d, m = setup(tmp_path)
+    capture = c.capture
+    refreshes = []
+
+    def refresh(_proof, authorize):
+        assert authorize() is True and not m.started
+        refreshes.append(True)
+
+    def stale(**kwargs):
+        cap = capture(**kwargs)
+        if c.last_action_request is not None:
+            cap.motion_snapshot["gps_reception"]["last_received_ns"] = 1_000_000_000
+        return cap
+
+    r.refresh_started_gps, r.sleep = refresh, lambda _: None
+    monkeypatch.setattr(c, "capture", stale)
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "error" and result["run_started"]
+    assert result["message"] == "新开始已确认，定位接续超时；输入已停止并保留记录"
+    assert not m.started and "update" not in d.calls and c.calls.count("begin") == 1
+    assert len(refreshes) <= 101 and result["app_pause_confirmed"]
+
+
+@pytest.mark.parametrize(
+    "change", [{"distance_m": 20}, {"elapsed_s": 30}, {"gps_label": "UNKNOWN"}]
+)
+def test_bootstrap_never_waits_through_changed_session_or_unknown_gps(
+    tmp_path, monkeypatch, change
+):
+    r, _b, c, d, m = setup(tmp_path)
+    capture = c.capture
+    refreshes = []
+    r.refresh_started_gps = lambda *_: refreshes.append(True)
+
+    def changed(**kwargs):
+        cap = capture(**kwargs)
+        if c.last_action_request is not None:
+            return RunCapture(
+                cap.frame.model_copy(
+                    update={"inspection": cap.frame.inspection.model_copy(update=change)}
+                ),
+                cap.hierarchy,
+                cap.screenshot,
+                cap.android_observed_ns,
+                cap.motion_snapshot,
+            )
+        return cap
+
+    monkeypatch.setattr(c, "capture", changed)
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "error" and not m.started and "update" not in d.calls
+    assert refreshes == [True] and c.calls.count("begin") == 1
+
+
+def test_bootstrap_cancellation_cannot_start_motion_or_path(tmp_path):
+    import threading
+
+    r, _b, _c, d, m = setup(tmp_path)
+    cancel = threading.Event()
+
+    def refresh(_proof, authorize):
+        assert authorize() is True
+        cancel.set()
+
+    r.refresh_started_gps = refresh
+    result = r.run(lambda: True, lambda _: None, cancel=cancel)
+    assert result["state"] == "paused" and not m.started and "update" not in d.calls
+
+
 def test_first_valid_frame_routes_before_next_weak_gps_capture(tmp_path, monkeypatch):
     r, _b, c, d, m = setup(tmp_path)
     events = []

@@ -79,6 +79,34 @@ def test_not_authorized_or_stale_does_not_click(monkeypatch):
     assert not clicked
 
 
+def test_weak_signal_after_click_does_not_deny_real_increasing_timer_or_repeat_start(monkeypatch):
+    connector, _clock, clicked, _device = setup(monkeypatch)
+    capture = connector.capture
+
+    def weak_running(**kwargs):
+        cap = capture(**kwargs)
+        if cap.frame.inspection.run_control_state == "running":
+            cap = RunCapture(
+                cap.frame.model_copy(
+                    update={
+                        "inspection": cap.frame.inspection.model_copy(
+                            update={"gps_label": "GPS信号弱"}
+                        )
+                    }
+                ),
+                cap.hierarchy,
+                cap.screenshot,
+            )
+        return cap
+
+    monkeypatch.setattr(connector, "capture", weak_running)
+    proof = connector.begin_once("a" * 32, lambda: True)
+    assert clicked == ["start"]
+    assert proof.before.inspection.gps_label == "GPS信号优"
+    assert proof.second_running.inspection.gps_label == "GPS信号弱"
+    assert proof.first_running.inspection.elapsed_s < proof.second_running.inspection.elapsed_s
+
+
 def test_template_or_foreground_change_blocks_and_does_not_retry(monkeypatch):
     connector, _, clicked, _ = setup(monkeypatch)
     connector.template.matches = lambda *_: False
