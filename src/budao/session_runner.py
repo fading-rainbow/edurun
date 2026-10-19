@@ -16,7 +16,7 @@ from .raw_motion import RecordedProbeClip
 from .runtime import RuntimeDispatcher
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
 from .start_connector import GPSReadinessTimeout, StartConnector
-from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, TargetInspection
+from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, TargetInspection, same_anchor_cards
 from .ui import KNOWN_AD_COMPONENT, dismiss_known_ad, focused_component
 
 
@@ -148,7 +148,7 @@ class SessionRunner:
             if (
                 not self._eligible_motion(v, allow_weak_gps=True)
                 or v.distance_m != previous.distance_m
-                or v.checkpoint_cards != previous.checkpoint_cards
+                or not same_anchor_cards(v.checkpoint_cards, previous.checkpoint_cards)
                 or not previous.elapsed_s <= v.elapsed_s <= previous.elapsed_s + 15
                 or not 0 <= self.clock() - cap.frame.sampled_at < 2
             ):

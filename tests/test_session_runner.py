@@ -417,6 +417,60 @@ def test_post_start_stale_reception_cannot_arm_motion_or_prime_route(tmp_path, m
     assert result["records_submitted"] == 0 and result["mode_restored_normal"]
 
 
+@pytest.mark.parametrize("delta,accepted", [(0.97, True), (5.01, False)])
+def test_same_anchor_bootstrap_keeps_dynamic_card_range_without_rewriting_frame(
+    tmp_path, delta, accepted
+):
+    import threading
+
+    from budao.target import CheckpointCard
+
+    r, _, c, d, m = setup(tmp_path)
+    old = CheckpointCard(number=1, state="assigned", name="测试点", distance_m=282.72)
+    proof = witness().model_copy(
+        update={
+            "second_running": witness().second_running.model_copy(
+                update={
+                    "inspection": witness().second_running.inspection.model_copy(
+                        update={"checkpoint_cards": (old,)}
+                    )
+                }
+            )
+        }
+    )
+    d.observer.confirmed_names = frozenset({"测试点"})
+    capture = c.capture
+
+    def changed(**kwargs):
+        cap = capture(**kwargs)
+        return RunCapture(
+            cap.frame.model_copy(
+                update={
+                    "inspection": cap.frame.inspection.model_copy(
+                        update={
+                            "checkpoint_cards": (
+                                old.model_copy(update={"distance_m": 282.72 + delta}),
+                            )
+                        }
+                    )
+                }
+            ),
+            cap.hierarchy,
+            cap.screenshot,
+            cap.android_observed_ns,
+            cap.motion_snapshot,
+        )
+
+    c.capture = changed
+    if accepted:
+        actual = r._initial_motion_frame(proof, threading.Event(), lambda: True)
+        assert actual.frame.inspection.checkpoint_cards[0].distance_m == 282.72 + delta
+    else:
+        with pytest.raises(ValueError, match="会话"):
+            r._initial_motion_frame(proof, threading.Event(), lambda: True)
+    assert not m.started and "update" not in d.calls
+
+
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_input_start_failure_or_cancellation_cannot_prime_route(tmp_path, monkeypatch, cancelled):
     import threading

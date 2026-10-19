@@ -229,3 +229,27 @@ def test_started_anchor_cannot_accept_forged_proof_foreign_device_or_move_locati
     with pytest.raises(ValueError, match="设备"):
         refresh_started_anchor(c, proof, GeoPoint(lat=30, lon=120), lambda: True)
     assert not writes
+
+
+def test_started_anchor_allows_small_assigned_range_refresh_not_changed_identity():
+    from test_resume import proof as resume_proof
+
+    from budao.resume import ResumeWitness
+
+    c, _, writes = started_connector()
+    data = resume_proof().model_dump()
+    old = CheckpointCard(number=1, state="assigned", name="测试点", distance_m=282.72)
+    for key in ("saved_pause", "first_paused", "second_paused", "first_running", "second_running"):
+        data[key]["inspection"]["checkpoint_cards"] = [old.model_dump()]
+    proof = ResumeWitness.model_validate(data)
+    cap = proof.second_running.model_copy(
+        update={
+            "sampled_at": 24,
+            "inspection": proof.second_running.inspection.model_copy(
+                update={"checkpoint_cards": (old.model_copy(update={"distance_m": 283.69}),)}
+            ),
+        }
+    )
+    c.capture, c.clock = lambda: SimpleNamespace(frame=cap), lambda: 24.1
+    refresh_started_anchor(c, proof, GeoPoint(lat=30, lon=120), lambda: True)
+    assert len(writes) == 1

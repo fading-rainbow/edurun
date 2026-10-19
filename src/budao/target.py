@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
@@ -27,6 +28,36 @@ class CheckpointCard(StrictModel):
     name: str | None = None
     distance_m: float | None = Field(default=None, ge=0, le=100_000)
     allocation_remaining_m: int | None = Field(default=None, ge=0, le=100_000)
+
+
+def same_anchor_cards(current, reference) -> bool:
+    """同锚点的卡片身份不变；仅已分配点的实测距离允许最多5米刷新误差。
+
+    不改写任一观察，不允许状态/名称/分配倒计程改变，也不是打卡确认。
+    所有比较均相对原始凭据，不能逐帧累积容差。
+    """
+    if not current or len(current) != len(reference):
+        return False
+    for actual, old in zip(current, reference, strict=True):
+        if not isinstance(actual, CheckpointCard) or not isinstance(old, CheckpointCard):
+            return False
+        if actual.model_dump(exclude={"distance_m"}) != old.model_dump(exclude={"distance_m"}):
+            return False
+        if actual.state != "assigned":
+            if actual.distance_m != old.distance_m:
+                return False
+        elif actual.distance_m is None or old.distance_m is None:
+            if actual.distance_m is not old.distance_m:
+                return False
+        elif not (
+            math.isfinite(actual.distance_m)
+            and math.isfinite(old.distance_m)
+            and 0 <= actual.distance_m <= 100_000
+            and 0 <= old.distance_m <= 100_000
+            and abs(actual.distance_m - old.distance_m) <= 5
+        ):
+            return False
+    return True
 
 
 RunControlState = Literal["unknown", "not_started_or_countdown", "running", "paused"]

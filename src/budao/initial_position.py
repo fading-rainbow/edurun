@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from .models import GeoPoint
 from .routes import RoutePlanner, distance
+from .target import same_anchor_cards
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,7 @@ def refresh_started_anchor(connector, proof, initial: GeoPoint, authorize):
         or v.counter_label != "已打卡"
         or v.completed_checkpoints != 0
         or v.distance_m != previous.distance_m
-        or v.checkpoint_cards != previous.checkpoint_cards
+        or not same_anchor_cards(v.checkpoint_cards, previous.checkpoint_cards)
         or v.elapsed_s is None
         or not previous.elapsed_s <= v.elapsed_s <= previous.elapsed_s + 15
         or v.gps_label not in {"GPS信号优", "GPS信号弱"}

@@ -88,6 +88,50 @@ def pause_progress_matches(status, view):
     )
 
 
+def resume_trace_sources(root: Path, directory: Path, original: StartWitness):
+    """最多四代已消费且双向关联的本任务续跑证据；不扫描无关运行目录。"""
+    runs = root.resolve() / ".local" / "runs"
+    sources, seen = [], set()
+    for _ in range(4):
+        directory = private_file(root, directory, must_exist=False)
+        if directory.parent != runs or directory in seen or not directory.is_dir():
+            raise ValueError("续跑接收证据目录越界、循环或缺失")
+        seen.add(directory)
+        witness_file = private_file(root, directory / "start-witness.json")
+        if witness_file.parent != directory or witness_file.stat().st_size > 128 * 1024:
+            raise ValueError("续跑开始凭据被重定向或超过限制")
+        saved = StartWitness.model_validate_json(witness_file.read_text("utf-8-sig"))
+        if saved != original:
+            raise ValueError("续跑接收证据不属于同一次原生开始")
+        trace = private_file(root, directory / "input-observations.jsonl", must_exist=False)
+        if trace.parent != directory:
+            raise ValueError("续跑接收轨迹被重定向")
+        if trace.is_file():
+            sources.append(trace)
+        parent_file = private_file(root, directory / "recovery-parent.json", must_exist=False)
+        if parent_file.parent != directory:
+            raise ValueError("续跑父证据被重定向")
+        if not parent_file.exists():
+            return tuple(sources)
+        if parent_file.stat().st_size > 4096:
+            raise ValueError("续跑父证据超过大小限制")
+        relation = json.loads(parent_file.read_text("utf-8-sig"))
+        if relation.get("new_start_attempted") is not False:
+            raise ValueError("续跑父证据不是同一会话")
+        parent = private_file(root, Path(relation["parent"]), must_exist=False)
+        if parent.parent != runs or parent in seen or not parent.is_dir():
+            raise ValueError("续跑父目录越界、循环或缺失")
+        claim_file = private_file(root, parent / "recovery-claimed.json")
+        if claim_file.parent != parent or claim_file.stat().st_size > 4096:
+            raise ValueError("续跑归属凭据超过大小限制")
+        claim = json.loads(claim_file.read_text("utf-8-sig"))
+        child = private_file(root, Path(claim["child"]), must_exist=False)
+        if child != directory or claim.get("retry_allowed") is not False:
+            raise ValueError("续跑父子归属未双向确认")
+        directory = parent
+    raise ValueError("续跑接收证据链超过四代，不自动继续")
+
+
 def verify_motion_evidence(root: Path, path: Path, clip) -> bool:
     try:
         source = private_file(root, path)
@@ -258,10 +302,21 @@ class LiveRuntime:
             ):
                 raise ValueError("上一继续动作未确认或缺少之后的新暂停，不重试")
         if (
-            status.get("state") != "paused"
+            status.get("state") not in {"paused", "error"}
+            or (
+                status.get("state") == "error"
+                and (
+                    status.get("run_started") is not True
+                    or status.get("start_action_attempted") is not True
+                    or status.get("cleanup_unconfirmed", False) is not False
+                )
+            )
             or status.get("mode_restored_normal") is not True
             or status.get("app_pause_confirmed") is not True
+            or type(status.get("records_submitted")) is not int
             or status.get("records_submitted") != 0
+            or status.get("record_valid_proven", False) is not False
+            or status.get("one_click_workflow_verified", False) is not False
             or witness.serial != bridge.serial
             or saved.inspection.run_control_state != "paused"
             or saved.inspection.completed_checkpoints != 0
@@ -524,7 +579,7 @@ class LiveRuntime:
         if self.settings.vision_config is not None:
             from .map_recovery import MapRecovery
 
-            sources = (ticket[0] / "input-observations.jsonl",) if ticket is not None else ()
+            sources = resume_trace_sources(self.root, ticket[0], ticket[1]) if ticket else ()
             recovery = MapRecovery(
                 self.root, self.settings.vision_config, connector, dispatcher, trace_sources=sources
             )
