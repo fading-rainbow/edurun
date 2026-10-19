@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import secrets
 import time
@@ -69,6 +70,22 @@ class RuntimeSettings(StrictModel):
         if self.maximum_s > 900 and not self.rollover_enabled:
             raise ValueError("超过单片段窗口必须显式启用暂停换窗")
         return self
+
+
+def pause_progress_matches(status, view):
+    """公共进度可能早于实际暂停；只接收有界清理延迟，之后仍须现场两帧复核。"""
+    distance_m, elapsed_s = status.get("distance_m"), status.get("elapsed_s")
+    return (
+        type(distance_m) in (float, int)
+        and math.isfinite(distance_m)
+        and 0 <= distance_m <= 100_000
+        and type(elapsed_s) is int
+        and 0 <= elapsed_s <= 86_400
+        and view.distance_m is not None
+        and view.elapsed_s is not None
+        and 0 <= view.distance_m - distance_m <= 30
+        and 0 <= view.elapsed_s - elapsed_s <= 30
+    )
 
 
 def verify_motion_evidence(root: Path, path: Path, clip) -> bool:
@@ -250,7 +267,7 @@ class LiveRuntime:
             or saved.inspection.completed_checkpoints != 0
             or saved.inspection.elapsed_s is None
             or not 0 < saved.inspection.elapsed_s < 1800
-            or status.get("distance_m") != saved.inspection.distance_m
+            or not pause_progress_matches(status, saved.inspection)
             or saved.sampled_at <= witness.second_running.sampled_at
             or not 0 <= time.monotonic() - saved.sampled_at < 86400
         ):

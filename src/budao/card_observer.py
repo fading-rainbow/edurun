@@ -28,6 +28,7 @@ class NamedCardObserver:
             catalog.resolve(name)
         self.catalog, self.confirmed_names = catalog, confirmed_names
         self.navigation_candidates: dict[str, GeoPoint] = {}
+        self.approach_only_names: set[str] = set()
 
     @property
     def allowed_names(self):

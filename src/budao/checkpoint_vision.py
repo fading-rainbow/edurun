@@ -22,7 +22,9 @@ class CheckpointPixels(StrictModel):
 
 
 class CheckpointAdvisor(UIAdvisor):
-    def locate(self, png: bytes) -> CheckpointPixels:
+    def locate(self, png: bytes, *, far_anchor_kind="turn") -> CheckpointPixels:
+        if far_anchor_kind not in {"turn", "start_marker"}:
+            raise ValueError("地图锚点类型未知，不发送")
         if not 0 < len(png) <= 2 * 1024 * 1024:
             raise ValueError("地图图片大小未知")
         with Image.open(io.BytesIO(png)) as im:
@@ -34,10 +36,17 @@ class CheckpointAdvisor(UIAdvisor):
             "current是绿色定位箭头的圆形中心；target是当前黑色白圈打卡标记的圆形中心，"
             "不是标记下方的小尖角。绿色实线为已经画出的轨迹。"
             "near_turn是从current沿绿色轨迹往回看的第一个显著转角；"
-            "far_turn是再往回看的下一个显著转角。不要把轨迹起始图标当转角。"
-            "转角坐标是两侧绿色直线中轴延长线的交点，不是粗线边缘或圆角上任意像素。"
+            + (
+                "far_turn是再往回看的下一个显著转角。不要把轨迹起始图标当转角。"
+                if far_anchor_kind == "turn"
+                else "本次只有一个转角：far_turn字段改为绿色轨迹明确起始图标的中心。"
+                "只有确实可见起始图标才能返回，不能使用任意线段端点；看不清则返回null。"
+            )
+            + "转角坐标是两侧绿色直线中轴延长线的交点，不是粗线边缘或圆角上任意像素。"
             "road_path是从current至target沿白色道路的短路径，起止像素分别为current和target，"
-            "最多12个点，不穿越楼房。分辨不出则相关字段null、路径空、confidence=0。"
+            "最多12个点，不穿越楼房。道路看不清时road_path为空，不猜测道路；程序会另用已有路网规划。"
+            "confidence表示标记及锚点像素的辨认置信度，不是道路可见度。"
+            "标记或锚点分辨不出时相关字段null、confidence=0。"
             "不生成经纬度、打卡完成、成绩、身份、人脸或登录信息。"
         )
         response = self.client.post(

@@ -462,11 +462,16 @@ class SessionRunner:
                         if not 0 <= self.clock() - cap.frame.sampled_at <= 2:
                             raise ValueError("暂停前观察已经过期")
                         button.long_click(duration=2)
-                        report["app_pause_confirmed"] = (
-                            self.connector.capture().frame.inspection.run_control_state == "paused"
-                        )
+                        current = self.connector.capture().frame.inspection
+                        report["app_pause_confirmed"] = current.run_control_state == "paused"
                     elif current.run_control_state == "paused":
                         report["app_pause_confirmed"] = True
+                    if report.get("app_pause_confirmed") is True:
+                        report.update(
+                            distance_m=current.distance_m,
+                            elapsed_s=current.elapsed_s,
+                            completed_checkpoints=current.completed_checkpoints,
+                        )
                 except Exception:
                     report["app_pause_unconfirmed"] = True
             self.lock.release()

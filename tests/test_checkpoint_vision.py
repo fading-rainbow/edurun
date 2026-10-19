@@ -73,3 +73,13 @@ def test_invalid_image_is_not_sent():
     with pytest.raises(UnidentifiedImageError):
         c.locate(b"not an image")
     assert not requests
+
+
+def test_start_anchor_is_explicitly_requested_and_arbitrary_endpoint_is_forbidden():
+    c, requests = client(answer())
+    c.locate(png(), far_anchor_kind="start_marker")
+    prompt = requests[0]["messages"][0]["content"]
+    assert "起始图标" in prompt and "不能使用任意线段端点" in prompt
+    with pytest.raises(ValueError):
+        c.locate(png(), far_anchor_kind="arbitrary")
+    assert len(requests) == 1

@@ -15,6 +15,30 @@ def settings():
     }
 
 
+@pytest.mark.parametrize(
+    "progress,expected",
+    [
+        ({"distance_m": 270, "elapsed_s": 98}, True),
+        ({"distance_m": 280, "elapsed_s": 104}, True),
+        ({"distance_m": 249, "elapsed_s": 98}, False),
+        ({"distance_m": 281, "elapsed_s": 98}, False),
+        ({"distance_m": 280, "elapsed_s": 73}, False),
+        ({"distance_m": 280, "elapsed_s": 105}, False),
+        ({"distance_m": float("nan"), "elapsed_s": 98}, False),
+        ({"distance_m": True, "elapsed_s": 98}, False),
+        ({}, False),
+    ],
+)
+def test_progress_can_precede_final_pause_but_not_override_or_invent_it(progress, expected):
+    from types import SimpleNamespace
+
+    from budao.live_runtime import pause_progress_matches
+
+    assert (
+        pause_progress_matches(progress, SimpleNamespace(distance_m=280, elapsed_s=104)) is expected
+    )
+
+
 def test_explicit_configuration_not_an_api_key_or_arbitrary_runtime(tmp_path):
     directory = tmp_path / ".local"
     directory.mkdir()

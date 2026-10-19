@@ -120,6 +120,7 @@ class RuntimeDispatcher:
         self.started = False
         self.finish_ready = False
         self.route_key: tuple[str, GeoPoint | None] | None = None
+        self.approach_wait_since: float | None = None
 
     def start(self, witness: StartWitness) -> None:
         if not isinstance(witness, StartWitness):
@@ -160,6 +161,21 @@ class RuntimeDispatcher:
             return Decision(action="finish_ready", reason="等待正常结束/提交确认，不继续移动")
         observation = self.observer.observe(frame.inspection, frame.sampled_at, frame.frame_id)
         decision = self.controller.step(observation, self.clock())
+        if (
+            self.controller.arrived
+            and self.controller.active_name in getattr(self.observer, "approach_only_names", ())
+            and any(
+                card.state == "assigned" and card.name == self.controller.active_name
+                for card in frame.inspection.checkpoint_cards
+            )
+            and decision.action == "wait"
+        ):
+            if self.approach_wait_since is None:
+                self.approach_wait_since = self.clock()
+            elif self.clock() - self.approach_wait_since >= 10:
+                decision = Decision(action="pause", reason="已到提供道路的接近点，App未确认打卡")
+        else:
+            self.approach_wait_since = None
         if (
             self.pace_range_s_per_km is not None
             and observation.screen == "running"

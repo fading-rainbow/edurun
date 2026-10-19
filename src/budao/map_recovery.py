@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,15 @@ from .ui_advisor import redacted_ui_image
 from .vision import crop_image
 
 CROP = (0, 366, 720, 932)
+MAX_MAP_CALLS = 6  # 三个未知点，每点最多当前视口+一次缩小；不增加现有key的总额度。
+
+
+@dataclass(frozen=True)
+class ReceivedAnchors:
+    near: GeoPoint
+    far: GeoPoint
+    current: GeoPoint
+    far_kind: str = "turn"
 
 
 class TraceRegistration:
@@ -35,7 +45,7 @@ class TraceRegistration:
 
     def __init__(self, planner, pixels, geos):
         if len(pixels) != 3 or len(geos) != 3:
-            raise ValueError("需要两个接收轨迹转角及当前接收定位")
+            raise ValueError("需要两个接收轨迹锚点及当前接收定位")
         xy = np.asarray([planner.xy(p) for p in geos])
         if np.linalg.matrix_rank(np.column_stack([xy, np.ones(3)])) != 3:
             raise ValueError("轨迹与当前位置共线，不能标定")
@@ -71,10 +81,12 @@ class TraceRegistration:
         return estimate, predicted
 
 
-def received_trace(path: Path, planner: RoutePlanner):
+def received_trace(
+    path: Path, planner: RoutePlanner, *, start_frame_id=None, start_request_id=None
+):
     if path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("接收轨迹日志超过有限窗口")
-    points = []
+    points, start_point = [], None
     for line in path.read_text("utf-8-sig").splitlines():
         value = json.loads(line)
         gps, observed = value.get("gps_reception"), value.get("android_observed_ns")
@@ -91,17 +103,44 @@ def received_trace(path: Path, planner: RoutePlanner):
         point = GeoPoint(lon=gps["longitude"], lat=gps["latitude"])
         if not planner.contains(point):
             raise ValueError("实际接收位置越界")
+        if (
+            start_frame_id is not None
+            and start_request_id is not None
+            and value.get("frame_id") == start_frame_id
+            and value.get("motion", {}).get("request_id") == start_request_id
+        ):
+            if start_point is not None:
+                raise ValueError("本次开始帧的接收定位不唯一")
+            start_point = point
         if not points or distance(points[-1], point) > 0.1:
             points.append(point)
     if len(points) < 8:
         raise ValueError("实际接收轨迹不足，不能标定未知点")
-    simplified = list(LineString([planner.xy(p) for p in points]).simplify(1).coords)
-    if len(simplified) < 4:
-        raise ValueError("缺少两个实际接收转角")
-    far, near, current = [planner.geo(p) for p in simplified[-3:]]
-    if min(distance(far, near), distance(near, current)) < 10:
-        raise ValueError("独立接收转角间距不足")
-    return near, far, current
+    simplified = list(LineString([planner.xy(p) for p in points]).simplify(2).coords)
+    current, turns = points[-1], []
+    for i in range(len(simplified) - 2, 0, -1):
+        a, b, c = (np.asarray(simplified[j]) for j in (i - 1, i, i + 1))
+        incoming, outgoing = b - a, c - b
+        if min(np.linalg.norm(incoming), np.linalg.norm(outgoing)) < 10:
+            continue
+        cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
+        angle = math.degrees(math.atan2(abs(cross), incoming @ outgoing))
+        point = planner.geo(simplified[i])
+        if angle < 25 or distance(point, turns[-1] if turns else current) < 10:
+            continue
+        turns.append(point)
+        if len(turns) == 2:
+            return ReceivedAnchors(turns[0], turns[1], current)
+    # 第一随机点可能在走完一个转角时就分配。只有原始开始凭据对应的那一帧
+    # 独立接收位置，才可与明确的地图起始图标配对；任意线段端点不是起点证明。
+    if (
+        turns
+        and start_point is not None
+        and distance(start_point, points[0]) < 5
+        and distance(start_point, turns[0]) >= 10
+    ):
+        return ReceivedAnchors(turns[0], start_point, current, "start_marker")
+    raise ValueError("独立接收转角不足，且无绑定本次开始帧的地图起点依据")
 
 
 def refined_target_center(image, point):
@@ -125,8 +164,24 @@ class MapRecovery:
         self.calls = 0
 
     def resolve(self, authorize):
+        try:
+            return self._resolve(authorize)
+        except (ValueError, RuntimeError) as error:
+            # 仅本机私有诊断，公共状态仍是固定提示；不能再次丢失实际标定失败原因。
+            with (self.connector.evidence / "map-recovery-failures.jsonl").open(
+                "a", encoding="utf-8"
+            ) as stream:
+                stream.write(
+                    json.dumps(
+                        {"type": type(error).__name__, "detail": str(error)}, ensure_ascii=False
+                    )
+                    + "\n"
+                )
+            raise
+
+    def _resolve(self, authorize):
         c, d = self.connector, self.dispatcher
-        if authorize() is not True or self.calls >= 3 or d.worker.state.moving:
+        if authorize() is not True or self.calls >= MAX_MAP_CALLS or d.worker.state.moving:
             raise ValueError("没有暂停许可或地图请求预算已用完")
         if sensor_mode(c.bridge.run("shell", "dumpsys", "sensorservice")) != NORMAL:
             raise ValueError("地图请求前输入模式尚未恢复正常")
@@ -143,58 +198,84 @@ class MapRecovery:
         if card.name in d.observer.allowed_names:
             return
         source = None
+        from .runtime import StartWitness
+
+        original = StartWitness.model_validate_json(
+            (c.evidence / "start-witness.json").read_text("utf-8-sig")
+        )
+        if original.serial != c.bridge.serial:
+            raise ValueError("地图标定的开始凭据设备不匹配")
         for path in (c.evidence / "input-observations.jsonl", *self.trace_sources):
             if path.exists():
                 try:
-                    near, far, actual = received_trace(path, d.planner)
+                    anchors = received_trace(
+                        path,
+                        d.planner,
+                        start_frame_id=original.before.frame_id,
+                        start_request_id=original.request_id,
+                    )
+                    near, far, actual = anchors.near, anchors.far, anchors.current
                     source = path
                     break
                 except ValueError:
                     continue
         if source is None:
             raise ValueError("没有本次实际接收轨迹的地图标定依据")
-        # One map-only pinch. Does not start, move GPS, end or save the record.
+        # 先看实际视口；只有标记/锚点不可见时才允许一次缩小，不能每次恢复都盲目缩放。
         map_view = c.ui.device(resourceId="com.lptiyu.tanke:id/textureMapView")
         if map_view.count != 1 or authorize() is not True:
             raise ValueError("地图控件或许可未知")
-        c.bridge.check_device()
-        if card.distance_m > 80:
-            map_view.gesture((100, 640), (620, 640), (260, 640), (460, 640), steps=40)
-        cap = c.capture(pixels=True)
-        if cap.frame.inspection != view:
-            raise ValueError("缩放后原始记录或卡片改变")
-        after = c.capture()
-        if after.frame.inspection != view:
-            raise ValueError("截图期间原记录或卡片改变，不发送")
-        image = Image.open(
-            io.BytesIO(
-                redacted_ui_image(cap.screenshot, cap.hierarchy, after_hierarchy=after.hierarchy)
+        for attempt in range(2):
+            cap = c.capture(pixels=True)
+            if cap.frame.inspection != view:
+                raise ValueError("地图观察期间原始记录或卡片改变")
+            after = c.capture()
+            if after.frame.inspection != view:
+                raise ValueError("截图期间原记录或卡片改变，不发送")
+            image = Image.open(
+                io.BytesIO(
+                    redacted_ui_image(
+                        cap.screenshot, cap.hierarchy, after_hierarchy=after.hierarchy
+                    )
+                )
             )
-        )
-        png = crop_image(image, CROP)
-        cropped = Image.open(io.BytesIO(png)).convert("RGB")
-        enlarged = cropped.resize((1440, 1132))
-        out = io.BytesIO()
-        enlarged.save(out, format="PNG")
-        self.calls += 1
-        client = CheckpointAdvisor.from_private_config(self.root, self.config)
-        try:
-            advice = client.locate(out.getvalue())
-        finally:
-            client.close()
+            png = crop_image(image, CROP)
+            cropped = Image.open(io.BytesIO(png)).convert("RGB")
+            enlarged = cropped.resize((1440, 1132))
+            out = io.BytesIO()
+            enlarged.save(out, format="PNG")
+            if self.calls >= MAX_MAP_CALLS or authorize() is not True:
+                raise ValueError("地图建议许可或预算已用完")
+            self.calls += 1
+            (c.evidence / f"map-input-{self.calls}.png").write_bytes(png)
+            client = CheckpointAdvisor.from_private_config(self.root, self.config)
+            try:
+                advice = client.locate(out.getvalue(), far_anchor_kind=anchors.far_kind)
+            finally:
+                client.close()
+            (c.evidence / f"map-advice-{self.calls}.json").write_text(
+                json.dumps({"navigation_authorized": False, "pixels": advice.model_dump()}), "utf-8"
+            )
+            if advice.confidence >= 0.9 and all(
+                p is not None
+                for p in (advice.current, advice.target, advice.near_turn, advice.far_turn)
+            ):
+                break
+            if attempt or card.distance_m <= 80 or self.calls >= MAX_MAP_CALLS:
+                raise ValueError("地图像素置信度或锚点不足")
+            current = c.capture().frame.inspection
+            if current != view or authorize() is not True:
+                raise ValueError("缩放前原始记录或许可改变")
+            c.bridge.check_device()
+            map_view.gesture((100, 640), (620, 640), (260, 640), (460, 640), steps=40)
         data = advice.model_dump()
         for name in ("current", "target", "near_turn", "far_turn"):
             if data[name] is not None:
                 data[name] = {k: v / 2 for k, v in data[name].items()}
         data["road_path"] = [{k: v / 2 for k, v in p.items()} for p in data["road_path"]]
         advice = CheckpointPixels.model_validate(data)
-        if (
-            advice.confidence < 0.9
-            or any(
-                p is None
-                for p in (advice.current, advice.target, advice.near_turn, advice.far_turn)
-            )
-            or len(advice.road_path) < 2
+        if advice.confidence < 0.9 or any(
+            p is None for p in (advice.current, advice.target, advice.near_turn, advice.far_turn)
         ):
             raise ValueError("地图像素置信度或路径不足")
         latest = c.capture(pixels=True)
@@ -221,9 +302,6 @@ class MapRecovery:
         )
         target_pixel = refined_target_center(cropped, advice.target)
         target, predicted = registration.validate_range(target_pixel, actual, card.distance_m)
-        path = [registration.map(p) for p in advice.road_path]
-        if distance(path[0], actual) > 3 or distance(path[-1], target) > 2:
-            raise ValueError("建议道路起止点不一致")
         # Translate the map's received coordinate space back to this worker's
         # command position. This is a measured local adapter offset, not a jump.
         ox, oy = d.planner.xy(d.worker.engine.position)
@@ -232,7 +310,32 @@ class MapRecovery:
         def shift(p):
             return d.planner.geo((d.planner.xy(p)[0] + ox - gx, d.planner.xy(p)[1] + oy - gy))
 
-        path = [d.worker.engine.position] + [shift(p) for p in path[1:-1]] + [shift(target)]
+        using_known_roads, approach_only, approach_gap_m = False, False, 0.0
+        command_target = shift(target)
+        try:
+            path = list(d.planner.plan(d.worker.engine.position, command_target))
+            using_known_roads = True
+        except ValueError:
+            if len(advice.road_path) < 2:
+                closest = d.planner.geo(
+                    nearest_points(d.planner.roads, Point(d.planner.xy(command_target)))[0].coords[
+                        0
+                    ]
+                )
+                approach_gap_m = distance(closest, command_target)
+                if approach_gap_m > 60:
+                    raise ValueError("目标不在既有路网且地图道路不可见；不猜测路径") from None
+                # 只前往已有道路上距标记最近的接近点，不假定App打卡半径、不中途穿楼。
+                # 到达后仍必须观察原App两帧真实确认，十秒不确认即暂停，不将接近当成功。
+                path = list(d.planner.plan(d.worker.engine.position, closest))
+                using_known_roads, approach_only = True, True
+            else:
+                path = [registration.map(p) for p in advice.road_path]
+                if distance(path[0], actual) > 3 or distance(path[-1], target) > 2:
+                    raise ValueError("建议道路起止点不一致") from None
+                path = (
+                    [d.worker.engine.position] + [shift(p) for p in path[1:-1]] + [command_target]
+                )
         if path_length(path) > 600:
             raise ValueError("模型道路路径超出有界恢复范围")
         line = LineString([d.planner.xy(p) for p in path])
@@ -249,19 +352,29 @@ class MapRecovery:
             or final_line.difference(d.planner.roads.buffer(5)).length > 60
         ):
             raise ValueError("连接已声明道路的最终通道不合格")
-        config = RouteConfig.model_validate(
-            d.planner.config.model_dump() | {"corridors": d.planner.config.corridors + (corridor,)}
-        )
-        planner = RoutePlanner(config)
+        planner = d.planner
+        if not using_known_roads:
+            config = RouteConfig.model_validate(
+                d.planner.config.model_dump()
+                | {"corridors": d.planner.config.corridors + (corridor,)}
+            )
+            planner = RoutePlanner(config)
         planner.plan(d.worker.engine.position, path[-1])
         with d.worker.lock:
             d.planner = d.worker.engine.planner = planner
             d.route_key = None
         d.observer.navigation_candidates[card.name] = path[-1]
+        if approach_only:
+            d.observer.approach_only_names.add(card.name)
         proof = {
             "name": card.name,
             "app_confirmed": False,
             "trace_source": str(source),
+            "far_anchor_kind": anchors.far_kind,
+            "using_known_roads": using_known_roads,
+            "approach_only": approach_only,
+            "approach_gap_m": approach_gap_m,
+            "estimated_target": command_target.model_dump(),
             "fit_residuals_m": registration.fit_residuals_m,
             "actual_range_m": card.distance_m,
             "predicted_range_m": predicted,

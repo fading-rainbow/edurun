@@ -209,6 +209,23 @@ def test_pause_and_unknown_target_stop_existing_path(setup):
     assert len(bridge.locations) == 1 and not worker.engine.enabled
 
 
+def test_road_approach_without_original_app_checkin_times_out_instead_of_claiming_success(setup):
+    dispatcher, worker, bridge, _clock, _config = setup
+    dispatcher.observer.approach_only_names.add("点4")
+    dispatcher.start(witness())
+    update(setup, 3, assigned="点4")
+    update(setup, 4, assigned="点4")
+    dispatcher.controller.mark_arrived()
+    assert update(setup, 5, assigned="点4").action == "wait"
+    assert update(setup, 16, assigned="点4").action == "pause"
+    assert (
+        dispatcher.controller.completed == 0
+        and not dispatcher.finish_ready
+        and not bridge.locations
+    )
+    assert not worker.engine.enabled
+
+
 def test_slow_gis_plan_cannot_renew_movement_from_expired_observation(setup, monkeypatch):
     dispatcher, worker, bridge, clock, _config = setup
     dispatcher.start(witness())
