@@ -99,11 +99,17 @@ def confirmed_approach(project_root: Path, entry: CheckpointEntry) -> bool:
     if entry.confirmation_evidence is None:
         return False
     source = private_file(project_root, entry.confirmation_evidence)
-    xml_file = private_file(project_root, source.with_suffix(".xml"))
     try:
-        if source.stat().st_size > 2 * 1024 * 1024 or xml_file.stat().st_size > 2 * 1024 * 1024:
+        if source.stat().st_size > 2 * 1024 * 1024:
             raise ValueError
         result = json.loads(source.read_text("utf-8-sig"))
+        if result.get("kind") == "journal_checkpoint_v1":
+            from .checkpoint_journal import confirmed_journal_approach
+
+            return confirmed_journal_approach(project_root, entry, result)
+        xml_file = private_file(project_root, source.with_suffix(".xml"))
+        if xml_file.stat().st_size > 2 * 1024 * 1024:
+            raise ValueError
         completed = result["after"]["completed_checkpoints"]
         before = result["before"]["completed_checkpoints"]
         if (
