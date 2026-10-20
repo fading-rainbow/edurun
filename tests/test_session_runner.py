@@ -210,6 +210,24 @@ def test_changed_mode_owner_is_not_force_stopped_or_globally_reset(tmp_path):
     assert not any("force-stop" in call or "enable" in call for call in b.calls)
 
 
+def test_cleanup_failure_detail_stays_private_and_does_not_clear_unknown_state(
+    tmp_path, monkeypatch
+):
+    r, b, _c, d, _m = setup(tmp_path)
+
+    def fail():
+        raise TimeoutError("PRIVATE_CLEANUP_DIAGNOSIS")
+
+    monkeypatch.setattr(d, "stop", fail)
+    reports = []
+    result = r.run(lambda: True, reports.append)
+    assert result["cleanup_unconfirmed"] and result["records_submitted"] == 0
+    assert r.private_cleanup_failures == [
+        {"stage": "position_stop", "type": "TimeoutError", "detail": "PRIVATE_CLEANUP_DIAGNOSIS"}
+    ]
+    assert "PRIVATE_CLEANUP" not in str(result) + str(reports) and b.mode == NORMAL
+
+
 def test_denied_start_never_attempts_start_or_enters_injection(tmp_path):
     r, b, c, _d, m = setup(tmp_path)
     result = r.run(lambda: False, lambda _: None)

@@ -15,6 +15,27 @@ def settings():
     }
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_cleanup_diagnostics_are_only_written_to_private_evidence(tmp_path, monkeypatch, failed):
+    from types import SimpleNamespace
+
+    from budao.live_runtime import JournalRunner
+    from budao.session_runner import SessionRunner
+
+    runner = object.__new__(JournalRunner)
+    runner.connector = SimpleNamespace(evidence=tmp_path)
+    failures = [{"stage": "motion_stop", "type": "TimeoutError", "detail": "PRIVATE_DETAIL"}]
+    runner.private_cleanup_failures = failures if failed else []
+    result = {"state": "verification_required", "records_submitted": 0}
+    monkeypatch.setattr(SessionRunner, "run", lambda *args: result.copy())
+    actual = runner.run(lambda: True, lambda _: None)
+    path = tmp_path / "cleanup-failures.json"
+    assert actual == result and "PRIVATE_DETAIL" not in str(actual)
+    assert path.exists() is failed
+    if failed:
+        assert json.loads(path.read_text()) == failures
+
+
 @pytest.mark.parametrize(
     "progress,expected",
     [

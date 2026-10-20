@@ -97,10 +97,56 @@ def test_foreground_client_requires_prepare_and_cannot_duplicate_start(tmp_path)
     with pytest.raises(ValueError, match="重复"):
         client.start(12_000_000_001)
     client.renew(12_100_000_000)
-    client.stop()
-    assert ("--ei", "motion_lease_ms", "2000") == d.calls[-1][-3:]
     with pytest.raises(ValueError, match="纳秒"):
         client.renew(True)
+    client.stop()
+    assert ("--ei", "motion_lease_ms", "2000") == d.calls[-1][-3:]
+
+
+@pytest.mark.parametrize("prepared_only", [False, True])
+def test_stop_is_idempotent_after_ack_and_never_restarts_force_stopped_service(
+    tmp_path, prepared_only
+):
+    c = clip(tmp_path)
+    d = Device(c)
+    client = ForegroundMotionClient(d)
+    client.preload_requested = prepared_only
+    client.started = not prepared_only
+    client.stop()
+    d.run("shell", "am", "force-stop", DIAGNOSTIC_PACKAGE)
+    count = len(d.calls)
+    client.stop()
+    assert len(d.calls) == count and client.stop_acknowledged
+    assert sum(DIAGNOSTIC_PACKAGE + ".MOTION_STOP" in call for call in d.calls) == 1
+    for action in (
+        lambda: client.prepare(c),
+        lambda: client.preload(c),
+        lambda: client.start(12_000_000_000),
+        lambda: client.renew(12_000_000_000),
+        client.renewal_observation_command,
+    ):
+        with pytest.raises(ValueError, match="停止"):
+            action()
+    assert len(d.calls) == count
+
+
+def test_uncertain_stop_is_not_retried_or_reported_as_acknowledged(tmp_path, monkeypatch):
+    client = ForegroundMotionClient(Device(clip(tmp_path)))
+    client.started = True
+    calls = []
+
+    def timeout(action):
+        calls.append(action)
+        raise TimeoutError("PRIVATE_STOP_RESULT_UNKNOWN")
+
+    monkeypatch.setattr(client, "_command", timeout)
+    with pytest.raises(TimeoutError):
+        client.stop()
+    with pytest.raises(RuntimeError, match="不重复"):
+        client.stop()
+    assert calls == ["STOP"] and client.stop_attempted and not client.stop_acknowledged
+    with pytest.raises(ValueError, match="停止"):
+        client.renew(12_000_000_000)
 
 
 def test_batched_foreground_observation_is_only_guarded_owned_files(tmp_path):

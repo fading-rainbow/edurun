@@ -96,6 +96,12 @@ class SessionRunner:
         self.used = False
         self.started = False
         self.lock = threading.Lock()
+        self.private_cleanup_failures = []
+
+    def _cleanup_failure(self, stage, error):
+        self.private_cleanup_failures.append(
+            {"stage": stage, "type": type(error).__name__, "detail": str(error)[:2048]}
+        )
 
     def _eligible_motion(self, view: TargetInspection, *, allow_weak_gps: bool = False) -> bool:
         """只判断控件/顺序，不构造可用于驱动的观察帧或开始证据。"""
@@ -418,11 +424,13 @@ class SessionRunner:
         finally:
             try:
                 self.dispatcher.stop()
-            except Exception:
+            except Exception as error:
+                self._cleanup_failure("position_stop", error)
                 report["cleanup_unconfirmed"] = True
             try:
                 self.motion.stop()
-            except Exception:
+            except Exception as error:
+                self._cleanup_failure("motion_stop", error)
                 report["cleanup_unconfirmed"] = True
             try:
                 if mode_changed:
@@ -449,7 +457,8 @@ class SessionRunner:
                     sensor_mode(self.motion.bridge.run("shell", "dumpsys", "sensorservice"))
                     == NORMAL
                 )
-            except Exception:
+            except Exception as error:
+                self._cleanup_failure("mode_restore", error)
                 report["cleanup_unconfirmed"] = True
             report["start_action_attempted"] = (
                 self.connector.last_action_request == self.original_request
@@ -483,7 +492,8 @@ class SessionRunner:
                             elapsed_s=current.elapsed_s,
                             completed_checkpoints=current.completed_checkpoints,
                         )
-                except Exception:
+                except Exception as error:
+                    self._cleanup_failure("app_pause", error)
                     report["app_pause_unconfirmed"] = True
             self.lock.release()
         publish(dict(report))

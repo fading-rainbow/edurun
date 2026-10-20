@@ -237,6 +237,10 @@ class JournalRunner(SessionRunner):
                 publish(report)
 
         result = super().run(authorize, forward, cancel)
+        if self.private_cleanup_failures:
+            (self.connector.evidence / "cleanup-failures.json").write_text(
+                json.dumps(self.private_cleanup_failures, ensure_ascii=False), "utf-8"
+            )
         if hasattr(self, "private_failure"):
             (self.connector.evidence / "private-failure.json").write_text(
                 json.dumps(self.private_failure, ensure_ascii=False), "utf-8"

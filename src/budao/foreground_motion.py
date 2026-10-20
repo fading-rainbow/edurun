@@ -53,6 +53,11 @@ class ForegroundMotionClient:
         self.bounded_stream, self.replay_passes = bounded_stream, replay_passes
         self.native_prepared = False
         self.preload_requested = False
+        self.stop_attempted, self.stop_acknowledged = False, False
+
+    def _require_open(self):
+        if self.stop_attempted:
+            raise ValueError("本任务已经请求停止，不能重新准备、开始或续期")
 
     def _command(self, action: str, observed_ns: int = 0, *, start: bool = False):
         if type(observed_ns) is not int or observed_ns < 0:
@@ -83,6 +88,7 @@ class ForegroundMotionClient:
         )
 
     def prepare(self, clip: RecordedProbeClip):
+        self._require_open()
         if self.started or self.preload_requested:
             raise ValueError("活动任务不能替换运动数据")
         if sensor_mode(self.bridge.run("shell", "dumpsys", "sensorservice")) != NORMAL:
@@ -95,6 +101,7 @@ class ForegroundMotionClient:
 
     def preload(self, clip: RecordedProbeClip, *, clock=time.monotonic, sleep=time.sleep):
         """正常模式中提前解析长片段；没有运动租约、注入或目标UI动作。"""
+        self._require_open()
         if not self.bounded_stream or not self.prepared or self.started or self.preload_requested:
             raise ValueError("只允许已写入的新长片段任务预加载一次")
         if sensor_mode(self.bridge.run("shell", "dumpsys", "sensorservice")) != NORMAL:
@@ -130,6 +137,7 @@ class ForegroundMotionClient:
         raise ValueError("未获取本次原生预加载证据，不开始运动")
 
     def start(self, observed_ns: int):
+        self._require_open()
         if self.started:
             raise ValueError("同一任务不能重复开始；过期后也不能自动重启")
         if not self.prepared:
@@ -143,12 +151,14 @@ class ForegroundMotionClient:
         self._command("START", observed_ns, start=True)
 
     def renew(self, observed_ns: int):
+        self._require_open()
         if not self.started:
             raise ValueError("未开始的任务不能续期")
         self._command("RENEW", observed_ns)
 
     def renewal_observation_command(self, *, gps_position: GeoPoint | None = None) -> str:
         """用于已解析的允许帧的尾查询。shell再次核对唯一焦点后才续期。"""
+        self._require_open()
         if not self.started:
             raise ValueError("未开始的运动任务不能生成续期观察")
         if gps_position is not None and not isinstance(gps_position, GeoPoint):
@@ -194,7 +204,15 @@ class ForegroundMotionClient:
 
     def stop(self):
         if self.started or self.preload_requested:
+            if self.stop_attempted:
+                if not self.stop_acknowledged:
+                    raise RuntimeError("本次停止结果未确认，不重复发送STOP")
+                return
+            # 人工等待已STOP并force-stop后，最终清理不能再唤起服务。
+            # 超时也先消费本次STOP，后续清理保留未知结果而不是盲重试。
+            self.stop_attempted = True
             self._command("STOP")
+            self.stop_acknowledged = True  # 仅命令ACK；模式恢复仍由编排独立核对。
 
 
 def receiver_observation(bridge: MuMuBridge, request: str) -> tuple[dict, dict | None]:
