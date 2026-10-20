@@ -364,20 +364,19 @@ class MapRecovery:
             path = list(d.planner.plan(d.worker.engine.position, command_target))
             using_known_roads = True
         except ValueError:
-            if len(advice.road_path) < 2:
-                closest = d.planner.geo(
-                    nearest_points(d.planner.roads, Point(d.planner.xy(command_target)))[0].coords[
-                        0
-                    ]
-                )
-                approach_gap_m = distance(closest, command_target)
-                if approach_gap_m > 60:
-                    raise ValueError("目标不在既有路网且地图道路不可见；不猜测路径") from None
+            closest = d.planner.geo(
+                nearest_points(d.planner.roads, Point(d.planner.xy(command_target)))[0].coords[0]
+            )
+            known_gap_m = distance(closest, command_target)
+            if known_gap_m <= 60:
                 # 只前往已有道路上距标记最近的接近点，不假定App打卡半径、不中途穿楼。
                 # 到达后仍必须观察原App两帧真实确认，十秒不确认即暂停，不将接近当成功。
                 path = list(d.planner.plan(d.worker.engine.position, closest))
                 using_known_roads, approach_only = True, True
+                approach_gap_m = known_gap_m
             else:
+                if len(advice.road_path) < 2:
+                    raise ValueError("目标不在既有路网且地图道路不可见；不猜测路径") from None
                 path = [registration.map(p) for p in advice.road_path]
                 if distance(path[0], actual) > 3 or distance(path[-1], target) > 2:
                     raise ValueError("建议道路起止点不一致") from None

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from budao.checkpoint_vision import CheckpointPixels
+from budao.checkpoint_vision import CheckpointAdvisor, CheckpointPixels
 from budao.map_recovery import (
     MapRecovery,
     ReceivedAnchors,
@@ -373,6 +373,31 @@ def test_invisible_road_allows_only_existing_road_approach_without_claiming_chec
     assert proof["using_known_roads"] and proof["approach_only"] and not proof["app_confirmed"]
     assert 15 <= proof["approach_gap_m"] <= 25 and not gestures
     assert d.observer.approach_only_names == {"新点"}
+
+
+def test_existing_road_approach_is_preferred_even_when_model_proposes_other_roads(
+    tmp_path, monkeypatch
+):
+    r, d, _, _, evidence = map_component(tmp_path, monkeypatch, [0.99], approach_only=True)
+    original = d.planner
+    base_factory = CheckpointAdvisor.from_private_config
+
+    def factory(*args):
+        client = base_factory(*args)
+        locate = client.locate
+
+        def proposed(*a, **kw):
+            advice = locate(*a, **kw)
+            return advice.model_copy(update={"road_path": [advice.current, advice.target]})
+
+        client.locate = proposed
+        return client
+
+    monkeypatch.setattr("budao.map_recovery.CheckpointAdvisor.from_private_config", factory)
+    r.resolve(lambda: True)
+    proof = json.loads((evidence / "map-candidate-1.json").read_text())
+    assert d.planner is original and proof["using_known_roads"] and proof["approach_only"]
+    assert not proof["app_confirmed"] and d.observer.approach_only_names == {"新点"}
 
 
 def test_exhausted_map_budget_does_not_send_or_zoom(tmp_path, monkeypatch):
