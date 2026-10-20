@@ -23,7 +23,7 @@ class CheckpointPixels(StrictModel):
 
 class CheckpointAdvisor(UIAdvisor):
     def locate(self, png: bytes, *, far_anchor_kind="turn") -> CheckpointPixels:
-        if far_anchor_kind not in {"turn", "start_marker"}:
+        if far_anchor_kind not in {"turn", "start_marker", "none"}:
             raise ValueError("地图锚点类型未知，不发送")
         if not 0 < len(png) <= 2 * 1024 * 1024:
             raise ValueError("地图图片大小未知")
@@ -39,8 +39,14 @@ class CheckpointAdvisor(UIAdvisor):
             + (
                 "far_turn是再往回看的下一个显著转角。不要把轨迹起始图标当转角。"
                 if far_anchor_kind == "turn"
-                else "本次只有一个转角：far_turn字段改为绿色轨迹明确起始图标的中心。"
-                "只有确实可见起始图标才能返回，不能使用任意线段端点；看不清则返回null。"
+                else (
+                    "far_turn本次不参与配准，可见则返回辅助像素，否则null；"
+                    "它不可见不降低current、target、near_turn清晰时的confidence。"
+                    "near_turn需与current相距至少80像素；忽略更近的角并沿轨迹往回选更远的明确角。"
+                    if far_anchor_kind == "none"
+                    else "本次只有一个转角：far_turn字段改为绿色轨迹明确起始图标的中心。"
+                    "只有确实可见起始图标才能返回，不能使用任意线段端点；看不清则返回null。"
+                )
             )
             + "转角坐标是两侧绿色直线中轴延长线的交点，不是粗线边缘或圆角上任意像素。"
             "road_path是从current至target沿白色道路的短路径，起止像素分别为current和target，"

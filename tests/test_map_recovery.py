@@ -42,6 +42,32 @@ def test_three_anchor_similarity_and_separate_original_card_range_gate():
         r.validate_range(target, geos[-1], 50)
 
 
+def test_two_supported_features_determine_similarity_but_card_range_stays_independent():
+    p = RoutePlanner(demo_config())
+    base = np.asarray(p.xy(p.config.baseline[0]))
+    geos = [p.geo(tuple(base)), p.geo(tuple(base + [60, 0]))]
+    pixels = [PixelPoint(x=100, y=100), PixelPoint(x=220, y=100)]
+    r = TraceRegistration(p, pixels, geos)
+    target = PixelPoint(x=220, y=40)
+    estimated = r.map(target)
+    actual, pred = r.validate_range(target, geos[-1], 30)
+    assert r.anchor_count == 2 and distance(estimated, actual) < 0.001
+    assert pred == pytest.approx(30, abs=0.05)
+    with pytest.raises(ValueError, match="独立距离"):
+        r.validate_range(target, geos[-1], 100)
+    assert distance(estimated, r.map(target)) < 0.001
+
+
+@pytest.mark.parametrize("short_pixels,short_geos", [(True, False), (False, True)])
+def test_pair_registration_requires_long_geographic_and_pixel_baselines(short_pixels, short_geos):
+    p = RoutePlanner(demo_config())
+    base = np.asarray(p.xy(p.config.baseline[0]))
+    geos = [p.geo(tuple(base)), p.geo(tuple(base + [10 if short_geos else 60, 0]))]
+    pixels = [PixelPoint(x=100, y=100), PixelPoint(x=120 if short_pixels else 220, y=100)]
+    with pytest.raises(ValueError, match="基线"):
+        TraceRegistration(p, pixels, geos)
+
+
 def test_async_card_range_uses_only_a_recent_real_fix_without_moving_estimated_target():
     p, r, _, geos = registration()
     target = PixelPoint(x=160, y=150)
@@ -312,6 +338,38 @@ def test_rounded_received_turn_can_use_long_support_without_inventing_corner(tmp
     assert anchors.far_kind == "start_marker"
     assert min(distance(anchors.near, point) for point in points) < 0.01
     assert distance(anchors.far, points[0]) < 0.01
+    assert f.read_bytes() == original
+
+
+def test_pair_mode_labels_supported_intersection_as_derived_not_a_received_fix(tmp_path):
+    p, f, _ = trace_file(tmp_path)
+    rows = [json.loads(line) for line in f.read_text().splitlines()]
+    template = rows[0]
+    first = GeoPoint(
+        lon=template["gps_reception"]["longitude"], lat=template["gps_reception"]["latitude"]
+    )
+    x, y = p.xy(first)
+    vertices = [(x, y), (x + 60, y), (x + 63.8, y + 6.8), (x + 63.8, y + 80)]
+    points = []
+    for a, b in zip(vertices, vertices[1:], strict=False):
+        for alpha in np.linspace(0, 1, 15):
+            points.append(p.geo(tuple(np.asarray(a) * (1 - alpha) + np.asarray(b) * alpha)))
+    values = [
+        template
+        | {
+            "frame_id": f"actual-{i}",
+            "gps_reception": template["gps_reception"] | {"longitude": pt.lon, "latitude": pt.lat},
+        }
+        for i, pt in enumerate(points)
+    ]
+    f.write_text("\n".join(json.dumps(v) for v in values))
+    original = f.read_bytes()
+    a = received_trace(f, p, pair_mode=True)
+    assert a.far is None and a.far_kind == "none"
+    assert a.near_kind == "supported_line_intersection" and len(a.near_supports) == 4
+    assert min(distance(a.near, pt) for pt in points) > 1
+    assert all(min(distance(s, pt) for pt in points) < 0.01 for s in a.near_supports)
+    assert distance(a.near, p.geo((x + 63.8, y))) < 0.01
     assert f.read_bytes() == original
 
 

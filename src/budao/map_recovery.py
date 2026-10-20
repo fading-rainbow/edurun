@@ -38,25 +38,33 @@ class ReceivedRangeFix:
 @dataclass(frozen=True)
 class ReceivedAnchors:
     near: GeoPoint
-    far: GeoPoint
+    far: GeoPoint | None
     current: GeoPoint
     far_kind: str = "turn"
     recent_fixes: tuple[ReceivedRangeFix, ...] = ()
     range_observed_ns: int | None = None
+    near_kind: str = "received_vertex"
+    near_supports: tuple[GeoPoint, ...] = ()
 
 
 class TraceRegistration:
-    """Four-parameter similarity, three independent trace/position anchors.
+    """Four-parameter similarity from two or three explicit geometric features.
 
     Fit residual is reported as fit residual, not independent validation. The
     original App's current target distance is the separate range-validation gate.
     """
 
     def __init__(self, planner, pixels, geos):
-        if len(pixels) != 3 or len(geos) != 3:
-            raise ValueError("需要两个接收轨迹锚点及当前接收定位")
+        if len(pixels) not in (2, 3) or len(geos) != len(pixels):
+            raise ValueError("需要两个或三个明示的轨迹/定位特征")
+        self.anchor_count = len(pixels)
         xy = np.asarray([planner.xy(p) for p in geos])
-        if np.linalg.matrix_rank(np.column_stack([xy, np.ones(3)])) != 3:
+        if len(pixels) == 2 and (
+            distance(*geos) < 40
+            or math.hypot(pixels[0].x - pixels[1].x, pixels[0].y - pixels[1].y) < 40
+        ):
+            raise ValueError("两特征配准需要至少40米和40像素的独立基线")
+        if len(pixels) == 3 and np.linalg.matrix_rank(np.column_stack([xy, np.ones(3)])) != 3:
             raise ValueError("轨迹与当前位置共线，不能标定")
         rows, rhs = [], []
         for p, (x, y) in zip(pixels, xy, strict=True):
@@ -145,7 +153,13 @@ def _trace_values(path: Path, extra_paths):
 
 
 def received_trace(
-    path: Path, planner: RoutePlanner, *, start_frame_id=None, start_request_id=None, extra_paths=()
+    path: Path,
+    planner: RoutePlanner,
+    *,
+    start_frame_id=None,
+    start_request_id=None,
+    extra_paths=(),
+    pair_mode=False,
 ):
     points, start_point, fixes, latest_observed = [], None, [], None
     for value in _trace_values(path, extra_paths):
@@ -197,8 +211,8 @@ def received_trace(
 
     for i in range(len(simplified) - 2, 0, -1):
         b = np.asarray(simplified[i])
-        # GPS采样的圆角可被RDP保留为相距几米的两个真实顶点。支持方向应跨过
-        # 这些短邻边，而不是丢掉整个转角；锚点仍是原始接收点，不计算虚拟交点。
+        # GPS圆角可被RDP保留为相距几米的两个顶点；跨过短邻边读取方向。
+        # 常规模式保留原顶点；配准模式明确记录由实际直线段支持的派生交点。
         before, after = i - 1, i + 1
         while before > 0 and np.linalg.norm(b - simplified[before]) < 10:
             before -= 1
@@ -214,6 +228,54 @@ def received_trace(
         # 折返180度在已绘轨迹上重合，没有可辨认的新几何拐角。
         if angle < 25 or angle > 155 or distance(point, turns[-1] if turns else current) < 10:
             continue
+        if pair_mode:
+            left, right = before + 1, after - 1
+            while (
+                before > 0
+                and np.linalg.norm(np.asarray(simplified[left]) - simplified[before]) < 10
+            ):
+                before -= 1
+            while (
+                after < len(simplified) - 1
+                and np.linalg.norm(np.asarray(simplified[after]) - simplified[right]) < 10
+            ):
+                after += 1
+            supports = np.asarray([simplified[j] for j in (before, left, right, after)])
+            incoming, outgoing = supports[1] - supports[0], supports[3] - supports[2]
+            if min(np.linalg.norm(incoming), np.linalg.norm(outgoing)) < 10:
+                continue
+            turn = math.degrees(
+                math.atan2(
+                    abs(incoming[0] * outgoing[1] - incoming[1] * outgoing[0]), incoming @ outgoing
+                )
+            )
+            if not 25 <= turn <= 155:
+                continue
+            try:
+                amount = np.linalg.solve(
+                    np.column_stack((incoming, -outgoing)), supports[2] - supports[0]
+                )
+            except np.linalg.LinAlgError:
+                continue
+            corner = supports[0] + amount[0] * incoming
+            derived = planner.geo(corner)
+            if (
+                np.linalg.norm(corner - b) > 10
+                or LineString(supports).distance(Point(corner)) > 5
+                or not planner.contains(derived)
+                or distance(derived, current) < 40
+            ):
+                continue
+            return ReceivedAnchors(
+                near=derived,
+                far=None,
+                current=current,
+                far_kind="none",
+                recent_fixes=tuple(recent),
+                range_observed_ns=latest_observed,
+                near_kind="supported_line_intersection",
+                near_supports=tuple(planner.geo(p) for p in supports),
+            )
         turns.append(point)
         if len(turns) == 2:
             if not independent(turns[0], turns[1]):
@@ -354,8 +416,9 @@ class MapRecovery:
             extra_paths=paths[1:],
             start_frame_id=original.before.frame_id,
             start_request_id=original.request_id,
+            pair_mode=True,
         )
-        near, far, actual = anchors.near, anchors.far, anchors.current
+        near, actual = anchors.near, anchors.current
         source = paths[0]
         # 先看实际视口；标记/锚点不可见时最多缩小两次，总调用预算仍是6次。
         map_view = c.ui.device(resourceId="com.lptiyu.tanke:id/textureMapView")
@@ -393,8 +456,7 @@ class MapRecovery:
                 json.dumps({"navigation_authorized": False, "pixels": advice.model_dump()}), "utf-8"
             )
             if advice.confidence >= 0.9 and all(
-                p is not None
-                for p in (advice.current, advice.target, advice.near_turn, advice.far_turn)
+                p is not None for p in (advice.current, advice.target, advice.near_turn)
             ):
                 break
             if attempt == 2 or card.distance_m <= 80 or self.calls >= MAX_MAP_CALLS:
@@ -411,7 +473,7 @@ class MapRecovery:
         data["road_path"] = [{k: v / 2 for k, v in p.items()} for p in data["road_path"]]
         advice = CheckpointPixels.model_validate(data)
         if advice.confidence < 0.9 or any(
-            p is None for p in (advice.current, advice.target, advice.near_turn, advice.far_turn)
+            p is None for p in (advice.current, advice.target, advice.near_turn)
         ):
             raise ValueError("地图像素置信度或路径不足")
         latest = c.capture(pixels=True)
@@ -435,7 +497,7 @@ class MapRecovery:
         if not same_map_viewport(cropped, fresh, target_pixel):
             raise ValueError("模型期间地图视口改变，标定失效")
         registration = TraceRegistration(
-            d.planner, [advice.near_turn, advice.far_turn, advice.current], [near, far, actual]
+            d.planner, [advice.near_turn, advice.current], [near, actual]
         )
         target, predicted = registration.validate_range(
             target_pixel,
@@ -513,6 +575,13 @@ class MapRecovery:
             "trace_source": str(source),
             "trace_sources": [str(path) for path in paths],
             "far_anchor_kind": anchors.far_kind,
+            "anchor_count": 2,
+            "near_feature_kind": anchors.near_kind,
+            "near_feature_supports": [p.model_dump() for p in anchors.near_supports],
+            "registration_features": {
+                "derived_turn": near.model_dump(),
+                "received_current": actual.model_dump(),
+            },
             "using_known_roads": using_known_roads,
             "approach_only": approach_only,
             "approach_gap_m": approach_gap_m,
