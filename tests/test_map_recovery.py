@@ -12,6 +12,7 @@ from budao.checkpoint_vision import CheckpointAdvisor, CheckpointPixels
 from budao.map_recovery import (
     MapRecovery,
     ReceivedAnchors,
+    ReceivedRangeFix,
     TraceRegistration,
     received_trace,
     same_map_viewport,
@@ -39,6 +40,59 @@ def test_three_anchor_similarity_and_separate_original_card_range_gate():
     assert distance(candidate, expected) < 0.01 and measured == pytest.approx(4, abs=0.01)
     with pytest.raises(ValueError, match="独立距离"):
         r.validate_range(target, geos[-1], 50)
+
+
+def test_async_card_range_uses_only_a_recent_real_fix_without_moving_estimated_target():
+    p, r, _, geos = registration()
+    target = PixelPoint(x=160, y=150)
+    x, y = p.xy(geos[-1])
+    previous = p.geo((x - 5, y))
+    fix = ReceivedRangeFix(previous, "actual-receiver-frame", 9_000_000_000)
+    estimate, matched = r.validate_range(
+        target, geos[-1], 9, recent_fixes=(fix,), range_observed_ns=10_000_000_000
+    )
+    assert distance(estimate, r.map(target)) < 0.001
+    assert matched == pytest.approx(9, abs=0.01) and r.range_reference is fix
+    assert r.current_predicted_range_m == pytest.approx(4, abs=0.01)
+
+
+@pytest.mark.parametrize("received_ns", [7_999_999_999, 10_000_000_001, True])
+def test_old_future_or_untyped_callback_cannot_rescue_range(received_ns):
+    p, r, _, geos = registration()
+    x, y = p.xy(geos[-1])
+    fix = ReceivedRangeFix(p.geo((x - 5, y)), "actual-receiver-frame", received_ns)
+    with pytest.raises(ValueError):
+        r.validate_range(
+            PixelPoint(x=160, y=150),
+            geos[-1],
+            9,
+            recent_fixes=(fix,),
+            range_observed_ns=10_000_000_000,
+        )
+
+
+def test_range_cannot_search_a_third_historical_fix_or_far_teleport():
+    p, r, _, geos = registration()
+    x, y = p.xy(geos[-1])
+    recent = ReceivedRangeFix(geos[-1], "recent", 9_900_000_000)
+    matching = ReceivedRangeFix(p.geo((x - 5, y)), "unsearched-third", 9_000_000_000)
+    with pytest.raises(ValueError):
+        r.validate_range(
+            PixelPoint(x=160, y=150),
+            geos[-1],
+            9,
+            recent_fixes=(recent, recent, matching),
+            range_observed_ns=10_000_000_000,
+        )
+    far = ReceivedRangeFix(p.geo((x - 20, y)), "far", 9_000_000_000)
+    with pytest.raises(ValueError):
+        r.validate_range(
+            PixelPoint(x=160, y=150),
+            geos[-1],
+            24,
+            recent_fixes=(far,),
+            range_observed_ns=10_000_000_000,
+        )
 
 
 def test_collinear_or_inconsistent_trace_anchors_do_not_generate_a_path():
@@ -127,6 +181,26 @@ def test_two_well_separated_real_turns_need_no_start_marker_fallback(tmp_path):
     assert anchors.far_kind == "turn"
     assert distance(anchors.near, points[29]) < 0.01
     assert distance(anchors.far, points[14]) < 0.01
+
+
+def test_range_references_are_only_two_latest_distinct_callbacks_within_two_seconds(tmp_path):
+    p, f, _ = trace_file(tmp_path, two_turns=True)
+    rows = [json.loads(line) for line in f.read_text().splitlines()]
+    for i, row in enumerate(rows):
+        row["android_observed_ns"] = 10_000_000_000 + i * 1_000_000_000
+        row["gps_reception"]["last_received_ns"] = row["android_observed_ns"] - 100_000_000
+    repeated = rows[-1] | {"frame_id": "later-view-same-callback"}
+    rows.append(repeated)
+    f.write_text("\n".join(json.dumps(row) for row in rows))
+    anchors = received_trace(f, p)
+    assert [fix.frame_id for fix in anchors.recent_fixes] == [
+        "later-view-same-callback",
+        rows[-3]["frame_id"],
+    ]
+    assert [anchors.range_observed_ns - fix.received_ns for fix in anchors.recent_fixes] == [
+        100_000_000,
+        1_100_000_000,
+    ]
 
 
 def test_arbitrary_trace_endpoint_cannot_be_substituted_for_original_start(tmp_path):
@@ -280,7 +354,7 @@ def map_component(tmp_path, monkeypatch, confidences, *, approach_only=False):
     monkeypatch.setattr(
         "budao.map_recovery.TraceRegistration",
         lambda *_: SimpleNamespace(
-            fit_residuals_m=[0, 0, 0], validate_range=lambda *_: (target, 120)
+            fit_residuals_m=[0, 0, 0], validate_range=lambda *_a, **_kw: (target, 120)
         ),
     )
     monkeypatch.setattr("budao.map_recovery.refined_target_center", lambda _im, p: p)

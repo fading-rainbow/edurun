@@ -29,11 +29,20 @@ MAX_MAP_CALLS = 6  # 整个执行最多6次；局部增加缩放机会不增加�
 
 
 @dataclass(frozen=True)
+class ReceivedRangeFix:
+    position: GeoPoint
+    frame_id: str
+    received_ns: int
+
+
+@dataclass(frozen=True)
 class ReceivedAnchors:
     near: GeoPoint
     far: GeoPoint
     current: GeoPoint
     far_kind: str = "turn"
+    recent_fixes: tuple[ReceivedRangeFix, ...] = ()
+    range_observed_ns: int | None = None
 
 
 class TraceRegistration:
@@ -69,16 +78,36 @@ class TraceRegistration:
             raise ValueError("地图估计位置离开声明区域")
         return point
 
-    def validate_range(self, target, current, actual_range_m):
+    def validate_range(
+        self, target, current, actual_range_m, *, recent_fixes=(), range_observed_ns=None
+    ):
         estimate = self.map(target)
         predicted = distance(estimate, current)
-        if (
-            not math.isfinite(actual_range_m)
-            or not 0 < actual_range_m <= 500
-            or abs(predicted - actual_range_m) > 3
-        ):
+        self.current_predicted_range_m, self.range_reference = predicted, None
+        if not math.isfinite(actual_range_m) or not 0 < actual_range_m <= 500:
             raise ValueError("原App独立距离与地图估计不一致，不导航")
-        return estimate, predicted
+        if abs(predicted - actual_range_m) <= 3:
+            return estimate, predicted
+        # App卡片与地图定位回调异步。只核对同一日志末尾两条、在原UI采集两秒内
+        # 的真实回调，不搜索任意历史位置，也不修改目标估计或3米阈值。
+        if type(range_observed_ns) is int:
+            for fix in recent_fixes[:2]:
+                if (
+                    isinstance(fix, ReceivedRangeFix)
+                    and isinstance(fix.position, GeoPoint)
+                    and type(fix.received_ns) is int
+                    and 0 <= range_observed_ns - fix.received_ns <= 2_000_000_000
+                    and type(fix.frame_id) is str
+                    and 0 < len(fix.frame_id) <= 128
+                    and self.planner.contains(fix.position)
+                    and distance(current, fix.position) <= 10
+                ):
+                    measured = distance(estimate, fix.position)
+                    if abs(measured - actual_range_m) <= 3:
+                        self.range_reference = fix
+                        self.range_observed_ns = range_observed_ns
+                        return estimate, measured
+        raise ValueError("原App独立距离与地图估计不一致，不导航")
 
 
 def received_trace(
@@ -86,7 +115,7 @@ def received_trace(
 ):
     if path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("接收轨迹日志超过有限窗口")
-    points, start_point = [], None
+    points, start_point, fixes, latest_observed = [], None, [], None
     for line in path.read_text("utf-8-sig").splitlines():
         value = json.loads(line)
         gps, observed = value.get("gps_reception"), value.get("android_observed_ns")
@@ -103,6 +132,9 @@ def received_trace(
         point = GeoPoint(lon=gps["longitude"], lat=gps["latitude"])
         if not planner.contains(point):
             raise ValueError("实际接收位置越界")
+        latest_observed = observed
+        if type(value.get("frame_id")) is str:
+            fixes.append(ReceivedRangeFix(point, value["frame_id"], gps["last_received_ns"]))
         if (
             start_frame_id is not None
             and start_request_id is not None
@@ -117,6 +149,14 @@ def received_trace(
     if len(points) < 8:
         raise ValueError("实际接收轨迹不足，不能标定未知点")
     simplified = list(LineString([planner.xy(p) for p in points]).simplify(2).coords)
+    recent, seen = [], set()
+    for fix in reversed(fixes):
+        identity = fix.received_ns
+        if 0 <= latest_observed - fix.received_ns <= 2_000_000_000 and identity not in seen:
+            recent.append(fix)
+            seen.add(identity)
+            if len(recent) == 2:
+                break
     current, turns = points[-1], []
     for i in range(len(simplified) - 2, 0, -1):
         b = np.asarray(simplified[i])
@@ -138,7 +178,13 @@ def received_trace(
             continue
         turns.append(point)
         if len(turns) == 2:
-            return ReceivedAnchors(turns[0], turns[1], current)
+            return ReceivedAnchors(
+                turns[0],
+                turns[1],
+                current,
+                recent_fixes=tuple(recent),
+                range_observed_ns=latest_observed,
+            )
     # 第一随机点可能在走完一个转角时就分配。只有原始开始凭据对应的那一帧
     # 独立接收位置，才可与明确的地图起始图标配对；任意线段端点不是起点证明。
     if (
@@ -147,7 +193,9 @@ def received_trace(
         and distance(start_point, points[0]) < 5
         and distance(start_point, turns[0]) >= 10
     ):
-        return ReceivedAnchors(turns[0], start_point, current, "start_marker")
+        return ReceivedAnchors(
+            turns[0], start_point, current, "start_marker", tuple(recent), latest_observed
+        )
     raise ValueError("独立接收转角不足，且无绑定本次开始帧的地图起点依据")
 
 
@@ -349,7 +397,13 @@ class MapRecovery:
         registration = TraceRegistration(
             d.planner, [advice.near_turn, advice.far_turn, advice.current], [near, far, actual]
         )
-        target, predicted = registration.validate_range(target_pixel, actual, card.distance_m)
+        target, predicted = registration.validate_range(
+            target_pixel,
+            actual,
+            card.distance_m,
+            recent_fixes=anchors.recent_fixes,
+            range_observed_ns=anchors.range_observed_ns,
+        )
         # Translate the map's received coordinate space back to this worker's
         # command position. This is a measured local adapter offset, not a jump.
         ox, oy = d.planner.xy(d.worker.engine.position)
@@ -425,6 +479,19 @@ class MapRecovery:
             "fit_residuals_m": registration.fit_residuals_m,
             "actual_range_m": card.distance_m,
             "predicted_range_m": predicted,
+            "current_predicted_range_m": getattr(
+                registration, "current_predicted_range_m", predicted
+            ),
+            "range_reference": (
+                {
+                    "frame_id": registration.range_reference.frame_id,
+                    "position": registration.range_reference.position.model_dump(),
+                    "received_ns": registration.range_reference.received_ns,
+                    "observed_ns": registration.range_observed_ns,
+                }
+                if getattr(registration, "range_reference", None) is not None
+                else None
+            ),
             "candidate": path[-1].model_dump(),
             "road_path": [p.model_dump() for p in path],
             "pixels": advice.model_dump(),
