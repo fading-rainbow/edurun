@@ -2,7 +2,7 @@
 
 import pytest
 
-from budao.target import CheckpointCard, same_anchor_cards
+from budao.target import CheckpointCard, same_anchor_cards, same_startup_anchor_cards
 
 
 def card(**changes):
@@ -49,3 +49,23 @@ def test_delta_is_to_original_anchor_not_accumulated_across_frames():
     original = card()
     assert same_anchor_cards((card(distance_m=286),), (original,))
     assert not same_anchor_cards((card(distance_m=289),), (original,))
+
+
+@pytest.mark.parametrize(
+    "remaining,accepted", [(100, True), (99, True), (97, True), (96, False), (101, False)]
+)
+def test_only_startup_can_accept_bounded_pending_countdown_drift(remaining, accepted):
+    original = card(state="pending", name=None, distance_m=None, allocation_remaining_m=100)
+    actual = original.model_copy(update={"allocation_remaining_m": remaining})
+    assert same_startup_anchor_cards((actual,), (original,)) is accepted
+    assert same_anchor_cards((actual,), (original,)) is (remaining == 100)
+    assert actual.allocation_remaining_m == remaining and original.allocation_remaining_m == 100
+
+
+@pytest.mark.parametrize(
+    "change", [{"number": 2}, {"state": "assigned"}, {"name": "新点"}, {"distance_m": 1}]
+)
+def test_startup_countdown_tolerance_does_not_change_card_identity(change):
+    original = card(state="pending", name=None, distance_m=None, allocation_remaining_m=100)
+    actual = original.model_copy(update={"allocation_remaining_m": 99} | change)
+    assert not same_startup_anchor_cards((actual,), (original,))

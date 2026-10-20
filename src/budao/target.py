@@ -60,6 +60,34 @@ def same_anchor_cards(current, reference) -> bool:
     return True
 
 
+def same_startup_anchor_cards(current, reference) -> bool:
+    """仅供新开始、零里程衔接：待分配倒计程可相对原凭据减少至多3米。
+
+    原App的公里显示按10米量化，静止GPS小幅刷新可先影响整数倒计程。
+    不用于一般续跑、改变卡片身份/状态或逐帧累积容差，不改写观察。
+    """
+    if same_anchor_cards(current, reference):
+        return True
+    if len(current) != 1 or len(reference) != 1:
+        return False
+    actual, old = current[0], reference[0]
+    return (
+        isinstance(actual, CheckpointCard)
+        and isinstance(old, CheckpointCard)
+        and old.number == 1
+        and old.state == "pending"
+        and old.name is None
+        and old.distance_m is None
+        and actual.model_dump(exclude={"allocation_remaining_m"})
+        == old.model_dump(exclude={"allocation_remaining_m"})
+        and type(old.allocation_remaining_m) is int
+        and old.allocation_remaining_m > 3
+        and type(actual.allocation_remaining_m) is int
+        and 0 < actual.allocation_remaining_m <= old.allocation_remaining_m
+        and old.allocation_remaining_m - actual.allocation_remaining_m <= 3
+    )
+
+
 RunControlState = Literal["unknown", "not_started_or_countdown", "running", "paused"]
 
 

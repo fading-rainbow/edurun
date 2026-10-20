@@ -17,7 +17,14 @@ from .resume import ResumeWitness
 from .runtime import RuntimeDispatcher
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
 from .start_connector import GPSReadinessTimeout, StartConnector
-from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, TargetInspection, same_anchor_cards
+from .target import (
+    GPS_READY_LABEL,
+    RUN_ACTIVITY,
+    TARGET,
+    TargetInspection,
+    same_anchor_cards,
+    same_startup_anchor_cards,
+)
 from .ui import KNOWN_AD_COMPONENT, dismiss_known_ad, focused_component
 
 
@@ -149,13 +156,19 @@ class SessionRunner:
         card_reference = (
             proof.saved_pause.inspection if isinstance(proof, ResumeWitness) else previous
         )
+        cards_match = (
+            same_startup_anchor_cards
+            if not isinstance(proof, ResumeWitness)
+            and previous.distance_m == 0
+            and previous.completed_checkpoints == 0
+            else same_anchor_cards
+        )
 
         def permitted():
             return self.clock() < deadline and not cancel.is_set() and authorize() is True
 
         while permitted():
-            if self.refresh_started_gps is not None:
-                self.refresh_started_gps(proof, permitted)
+            # 先观察实收：已经GPS优且本任务定位新鲜时，不再重置同一位置。
             cap = self.connector.capture(motion_request=self.motion.request)
             v = cap.frame.inspection
             if cancel.is_set() or authorize() is not True:
@@ -165,7 +178,7 @@ class SessionRunner:
             if (
                 not self._eligible_motion(v, allow_weak_gps=True)
                 or v.distance_m != previous.distance_m
-                or not same_anchor_cards(v.checkpoint_cards, card_reference.checkpoint_cards)
+                or not cards_match(v.checkpoint_cards, card_reference.checkpoint_cards)
                 or not previous.elapsed_s <= v.elapsed_s <= previous.elapsed_s + 15
                 or not 0 <= self.clock() - cap.frame.sampled_at < 2
             ):
@@ -179,6 +192,7 @@ class SessionRunner:
                 return cap
             if self.refresh_started_gps is None:
                 break
+            self.refresh_started_gps(proof, permitted)
             self.sleep(0.1)
         raise PostStartGPSReadinessTimeout("新开始后定位接续未就绪；不授权输入或路线")
 

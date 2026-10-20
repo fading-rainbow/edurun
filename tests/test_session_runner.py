@@ -252,19 +252,39 @@ def test_record_recovery_guard_emits_fixed_reason_without_starting_input(tmp_pat
     assert "begin" not in c.calls and "prepare" not in m.calls and b.mode == NORMAL
 
 
-def test_same_anchor_bootstrap_is_after_real_witness_and_mode_before_motion_start(tmp_path):
+def test_same_anchor_bootstrap_is_after_real_witness_and_mode_before_motion_start(
+    tmp_path, monkeypatch
+):
     r, b, c, d, m = setup(tmp_path)
     pulses = []
+    start = d.start
+
+    def started(proof):
+        start(proof)
+        c.gps_invalid = True
+
+    monkeypatch.setattr(d, "start", started)
 
     def refresh(proof, authorize):
         assert proof == witness() and c.last_action_request == m.request
         assert d.started and b.mode == INJECTION and not m.started
         assert authorize() is True
         pulses.append("same_anchor_only")
+        c.gps_invalid = False
 
     r.refresh_started_gps = refresh
     result = r.run(lambda: True, lambda _: None)
     assert result["state"] == "finish_ready" and pulses == ["same_anchor_only"]
+
+
+def test_already_fresh_post_start_gps_does_not_refresh_and_reset_provider(tmp_path):
+    r, _, _, _, _ = setup(tmp_path)
+
+    def unnecessary_refresh(*_):
+        raise AssertionError("Fresh actual GPS must not be reset")
+
+    r.refresh_started_gps = unnecessary_refresh
+    assert r.run(lambda: True, lambda _: None)["state"] == "finish_ready"
 
 
 def test_post_start_weak_signal_waits_boundedly_for_real_ready_frame_before_input(
@@ -306,7 +326,7 @@ def test_post_start_weak_signal_waits_boundedly_for_real_ready_frame_before_inpu
     monkeypatch.setattr(m, "start", input_start)
     result = r.run(lambda: True, lambda _: None)
     assert result["state"] == "finish_ready" and c.calls.count("begin") == 1
-    assert refreshes == ["same_anchor"] * 3
+    assert refreshes == ["same_anchor"] * 2
 
 
 def test_post_start_missing_reception_expires_without_motion_route_or_repeat_start(
@@ -363,14 +383,21 @@ def test_bootstrap_never_waits_through_changed_session_or_unknown_gps(
     monkeypatch.setattr(c, "capture", changed)
     result = r.run(lambda: True, lambda _: None)
     assert result["state"] == "error" and not m.started and "update" not in d.calls
-    assert refreshes == [True] and c.calls.count("begin") == 1
+    assert refreshes == [] and c.calls.count("begin") == 1
 
 
-def test_bootstrap_cancellation_cannot_start_motion_or_path(tmp_path):
+def test_bootstrap_cancellation_cannot_start_motion_or_path(tmp_path, monkeypatch):
     import threading
 
-    r, _b, _c, d, m = setup(tmp_path)
+    r, _b, c, d, m = setup(tmp_path)
     cancel = threading.Event()
+    start = d.start
+
+    def started(proof):
+        start(proof)
+        c.gps_invalid = True
+
+    monkeypatch.setattr(d, "start", started)
 
     def refresh(_proof, authorize):
         assert authorize() is True

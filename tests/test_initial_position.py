@@ -192,6 +192,29 @@ def test_started_anchor_only_refreshes_same_actual_position_and_does_not_drive()
     assert writes[0][1]["authorize"]() is False
 
 
+@pytest.mark.parametrize("remaining,accepted", [(99, True), (97, True), (96, False)])
+def test_zero_start_anchor_accepts_only_small_pending_countdown_refresh(remaining, accepted):
+    c, proof, writes = started_connector()
+    captured = c.capture().frame
+    old = captured.inspection.checkpoint_cards[0]
+    actual = old.model_copy(update={"allocation_remaining_m": remaining})
+    captured = captured.model_copy(
+        update={
+            "inspection": captured.inspection.model_copy(update={"checkpoint_cards": (actual,)})
+        }
+    )
+    c.capture = lambda: SimpleNamespace(frame=captured)
+    if accepted:
+        refresh_started_anchor(c, proof, GeoPoint(lat=30, lon=120), lambda: True)
+        assert len(writes) == 1
+    else:
+        with pytest.raises(ValueError, match="同一打卡进度"):
+            refresh_started_anchor(c, proof, GeoPoint(lat=30, lon=120), lambda: True)
+        assert not writes
+    assert actual.allocation_remaining_m == remaining
+    assert proof.second_running.inspection.checkpoint_cards[0].allocation_remaining_m == 100
+
+
 @pytest.mark.parametrize(
     "changes",
     [
