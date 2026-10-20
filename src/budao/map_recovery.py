@@ -26,6 +26,7 @@ from .vision import crop_image
 
 CROP = (0, 366, 720, 932)
 MAX_MAP_CALLS = 6  # 整个执行最多6次；局部增加缩放机会不增加调用总额或key额度。
+MAX_MAP_ZOOMS = 3  # 437米目标在两次缩小后的裁剪视口外，仍保留总请求预算。
 
 
 @dataclass(frozen=True)
@@ -344,6 +345,59 @@ def refined_target_center(image, point):
     return PixelPoint(x=float(xs.mean()), y=float(ys.mean()))
 
 
+def refined_green_center(image: Image.Image, approximate: PixelPoint, *, radius: int) -> PixelPoint:
+    """细化固定大小的绿色定位/起点圆，不用原App距离调整像素或比例。"""
+    if radius not in (17, 22):
+        raise ValueError("未知绿色圆形图标尺寸")
+    x, y = approximate.x, approximate.y
+    left, top = int(x) - 30, int(y) - 30
+    if left < 0 or top < 0 or left + 60 > image.width or top + 60 > image.height:
+        raise ValueError("绿色锚点圆被裁剪")
+    rgb = np.asarray(image.convert("RGB").crop((left, top, left + 60, top + 60))).astype(int)
+    red, green, blue = (rgb[:, :, i] for i in range(3))
+    # 深绿色图标与纯亮绿色轨迹分开；白字/箭头在内圈，不作为外圆边缘。
+    mask = (
+        (red < 120)
+        & (green > 100)
+        & (green < 210)
+        & (blue > 50)
+        & (blue < 190)
+        & (green - red > 65)
+        & (green - blue > 20)
+    )
+    interior = (
+        np.roll(mask, 1, axis=0)
+        & np.roll(mask, -1, axis=0)
+        & np.roll(mask, 1, axis=1)
+        & np.roll(mask, -1, axis=1)
+    )
+    ys, xs = np.nonzero(mask & ~interior)
+    points = np.column_stack((xs + left, ys + top))
+    lengths = np.linalg.norm(points - [x, y], axis=1)
+    points = points[(lengths > radius * 0.75) & (lengths < radius + 3)]
+    center, fitted_radius = np.array([x, y]), float(radius)
+    for _ in range(5):
+        selected = points[np.abs(np.linalg.norm(points - center, axis=1) - fitted_radius) < 2]
+        if len(selected) < 45:
+            raise ValueError("绿色圆形锚点边缘不足")
+        angles = np.arctan2(selected[:, 1] - center[1], selected[:, 0] - center[0])
+        if len(set(np.floor((angles + math.pi) / (math.pi / 4)).astype(int) % 8)) < 7:
+            raise ValueError("绿色圆形锚点边缘不完整")
+        fit = np.linalg.lstsq(
+            np.column_stack((2 * selected, np.ones(len(selected)))),
+            (selected**2).sum(axis=1),
+            rcond=None,
+        )[0]
+        center = fit[:2]
+        squared = fit[2] + center @ center
+        if squared <= 0:
+            raise ValueError("绿色锚点不是圆形")
+        fitted_radius = math.sqrt(squared)
+    if np.linalg.norm(center - [x, y]) > 4 or abs(fitted_radius - radius) > 2:
+        raise ValueError("绿色圆形锚点与模型定位不一致")
+    return PixelPoint(x=float(center[0]), y=float(center[1]))
+
+
 def same_map_viewport(before: Image.Image, after: Image.Image, target: PixelPoint) -> bool:
     """比较轨迹覆盖物和打卡标记，不把底图瓦片/地名加载误报成视口移动。"""
     if before.size != after.size:
@@ -381,9 +435,11 @@ class MapRecovery:
         self.trace_sources = tuple(trace_sources)
         self.calls = 0
 
-    def resolve(self, authorize):
+    def resolve(self, authorize, *, calibration_only=False):
+        if type(calibration_only) is not bool:
+            raise ValueError("仅标定选项必须明确")
         try:
-            return self._resolve(authorize)
+            return self._resolve(authorize, calibration_only=calibration_only)
         except (ValueError, RuntimeError) as error:
             # 仅本机私有诊断，公共状态仍是固定提示；不能再次丢失实际标定失败原因。
             with (self.connector.evidence / "map-recovery-failures.jsonl").open(
@@ -397,7 +453,7 @@ class MapRecovery:
                 )
             raise
 
-    def _resolve(self, authorize):
+    def _resolve(self, authorize, *, calibration_only=False):
         c, d = self.connector, self.dispatcher
         if authorize() is not True or self.calls >= MAX_MAP_CALLS or d.worker.state.moving:
             raise ValueError("没有暂停许可或地图请求预算已用完")
@@ -438,11 +494,11 @@ class MapRecovery:
         )
         near, actual = anchors.near, anchors.current
         source = paths[0]
-        # 先看实际视口；标记/锚点不可见时最多缩小两次，总调用预算仍是6次。
+        # 先看实际视口；标记/锚点不可见时最多缩小三次，总调用预算仍是6次。
         map_view = c.ui.device(resourceId="com.lptiyu.tanke:id/textureMapView")
         if map_view.count != 1 or authorize() is not True:
             raise ValueError("地图控件或许可未知")
-        for attempt in range(3):
+        for attempt in range(MAX_MAP_ZOOMS + 1):
             cap = c.capture(pixels=True)
             if cap.frame.inspection != view:
                 raise ValueError("地图观察期间原始记录或卡片改变")
@@ -477,7 +533,7 @@ class MapRecovery:
                 p is not None for p in (advice.current, advice.target, advice.near_turn)
             ):
                 break
-            if attempt == 2 or card.distance_m <= 80 or self.calls >= MAX_MAP_CALLS:
+            if attempt == MAX_MAP_ZOOMS or card.distance_m <= 80 or self.calls >= MAX_MAP_CALLS:
                 raise ValueError("地图像素置信度或锚点不足")
             current = c.capture().frame.inspection
             if current != view or authorize() is not True:
@@ -514,9 +570,11 @@ class MapRecovery:
         fresh = Image.open(io.BytesIO(fresh_png)).convert("RGB")
         if not same_map_viewport(cropped, fresh, target_pixel):
             raise ValueError("模型期间地图视口改变，标定失效")
-        registration = TraceRegistration(
-            d.planner, [advice.near_turn, advice.current], [near, actual]
-        )
+        anchor_pixel, current_pixel = advice.near_turn, advice.current
+        if anchors.far_kind == "start_marker_pair":
+            anchor_pixel = refined_green_center(cropped, anchor_pixel, radius=22)
+            current_pixel = refined_green_center(cropped, current_pixel, radius=17)
+        registration = TraceRegistration(d.planner, [anchor_pixel, current_pixel], [near, actual])
         target, predicted = registration.validate_range(
             target_pixel,
             actual,
@@ -534,6 +592,36 @@ class MapRecovery:
 
         using_known_roads, approach_only, approach_gap_m = False, False, 0.0
         command_target = shift(target)
+        if calibration_only:
+            # 对照实验只获得经实收轨迹/原App距离独立校验的中心；不改路网、导航或位置。
+            proof = {
+                "name": card.name,
+                "number": card.number,
+                "original_request": original.request_id,
+                "paused_frame": latest.frame.model_dump(mode="json"),
+                "start_anchor_frame_id": original.before.frame_id,
+                "far_anchor_kind": anchors.far_kind,
+                "received_current": actual.model_dump(),
+                "command_current": d.worker.engine.position.model_dump(),
+                "received_target": target.model_dump(),
+                "command_target": command_target.model_dump(),
+                "actual_range_m": card.distance_m,
+                "predicted_range_m": predicted,
+                "fit_residuals_m": registration.fit_residuals_m,
+                "registration_pixels": {
+                    "anchor": anchor_pixel.model_dump(),
+                    "current": current_pixel.model_dump(),
+                    "target": target_pixel.model_dump(),
+                },
+                "navigation_authorized": False,
+                "position_command_sent": False,
+                "app_confirmed": False,
+                "pixels": advice.model_dump(),
+            }
+            (c.evidence / f"map-calibration-{self.calls}.json").write_text(
+                json.dumps(proof, ensure_ascii=False, indent=2), "utf-8"
+            )
+            return proof
         try:
             path = list(d.planner.plan(d.worker.engine.position, command_target))
             using_known_roads = True

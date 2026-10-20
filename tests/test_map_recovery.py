@@ -1,6 +1,7 @@
 """Synthetic geometry only; not emulator navigation or accepted-grade evidence."""
 
 import json
+import math
 import threading
 from types import SimpleNamespace
 
@@ -585,11 +586,11 @@ def test_unseen_markers_allow_only_one_map_zoom_and_two_distinct_observations(
     assert len(gestures) == 1 and len(calls) == 2
 
 
-def test_low_confidence_stops_after_two_zooms_without_adding_candidate(tmp_path, monkeypatch):
-    r, d, gestures, calls, evidence = map_component(tmp_path, monkeypatch, [0.1, 0.1, 0.1])
+def test_low_confidence_stops_after_three_zooms_without_adding_candidate(tmp_path, monkeypatch):
+    r, d, gestures, calls, evidence = map_component(tmp_path, monkeypatch, [0.1, 0.1, 0.1, 0.1])
     with pytest.raises(ValueError, match="置信度"):
         r.resolve(lambda: True)
-    assert len(gestures) == 2 and len(calls) == 3 and not d.observer.navigation_candidates
+    assert len(gestures) == 3 and len(calls) == 4 and not d.observer.navigation_candidates
 
 
 def test_second_zoom_can_reveal_clipped_start_and_target_without_extra_total_budget(
@@ -609,6 +610,15 @@ def test_remaining_total_call_budget_can_stop_before_second_zoom(tmp_path, monke
     assert r.calls == 6 and len(calls) == 1 and not gestures
     assert not d.observer.navigation_candidates
     assert (evidence / "map-recovery-failures.jsonl").exists()
+
+
+def test_distant_target_can_use_one_more_zoom_within_existing_six_call_budget(
+    tmp_path, monkeypatch
+):
+    r, d, gestures, calls, _ = map_component(tmp_path, monkeypatch, [0.0, 0.0, 0.0, 0.99])
+    r.resolve(lambda: True)
+    assert len(gestures) == 3 and len(calls) == 4 and r.calls <= 6
+    assert "新点" in d.observer.navigation_candidates
 
 
 def test_invisible_road_allows_only_existing_road_approach_without_claiming_checkin(
@@ -657,3 +667,48 @@ def test_exhausted_map_budget_does_not_send_or_zoom(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="预算"):
         r.resolve(lambda: True)
     assert not gestures and not calls
+
+
+def test_calibration_only_does_not_add_navigation_roads_or_send_location(tmp_path, monkeypatch):
+    r, d, gestures, calls, evidence = map_component(tmp_path, monkeypatch, [0.99])
+    planner, position = d.planner, d.worker.engine.position
+    proof = r.resolve(lambda: True, calibration_only=True)
+    assert proof["name"] == "新点" and not proof["position_command_sent"]
+    assert not proof["navigation_authorized"] and not proof["app_confirmed"]
+    assert d.planner is planner and d.worker.engine.position == position
+    assert not d.observer.navigation_candidates and not gestures and len(calls) == 1
+    assert json.loads((evidence / "map-calibration-1.json").read_text()) == proof
+    assert not list(evidence.glob("map-candidate-*.json"))
+
+
+def test_calibration_only_still_requires_pause_authorization(tmp_path, monkeypatch):
+    r, d, gestures, calls, _ = map_component(tmp_path, monkeypatch, [0.99])
+    with pytest.raises(ValueError):
+        r.resolve(lambda: False, calibration_only=True)
+    with pytest.raises(ValueError):
+        r.resolve(lambda: True, calibration_only="yes")
+    assert not calls and not gestures and not d.observer.navigation_candidates
+
+
+@pytest.mark.parametrize("radius", [17, 22])
+def test_green_circle_refinement_uses_pixels_not_range_and_ignores_bright_trace(radius):
+    from budao.map_recovery import refined_green_center
+
+    image = Image.new("RGB", (160, 160), (230, 247, 247))
+    draw = ImageDraw.Draw(image)
+    draw.line([(10, 50), (80, 50), (80, 80)], fill=(0, 255, 0), width=8)
+    draw.ellipse((80 - radius, 80 - radius, 80 + radius, 80 + radius), fill=(0, 175, 100))
+    draw.polygon([(80, 72), (85, 84), (80, 81), (75, 84)], fill="white")
+    center = refined_green_center(image, PixelPoint(x=81, y=81), radius=radius)
+    assert math.hypot(center.x - 80, center.y - 80) < 0.5
+
+
+def test_missing_partial_or_arbitrary_green_anchor_is_not_refined():
+    from budao.map_recovery import refined_green_center
+
+    for color in ("white", (0, 255, 0), (0, 175, 100)):
+        image = Image.new("RGB", (160, 160), color)
+        with pytest.raises(ValueError):
+            refined_green_center(image, PixelPoint(x=80, y=80), radius=17)
+    with pytest.raises(ValueError, match="裁剪"):
+        refined_green_center(image, PixelPoint(x=10, y=80), radius=17)
