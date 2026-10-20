@@ -10,7 +10,7 @@ from pydantic import Field, model_validator
 
 from .models import StrictModel
 from .runtime import CapturedRunFrame, StartWitness
-from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET
+from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, same_anchor_cards
 from .ui import focused_component
 
 PAUSE_CLOCK_DETAIL = "暂停证据时钟已失效，需用户处理"
@@ -63,7 +63,7 @@ class ResumeWitness(StrictModel):
                 or v.counter_label != "已打卡"
                 or v.completed_checkpoints != 0
                 or v.distance_m != saved.distance_m
-                or v.checkpoint_cards != saved.checkpoint_cards
+                or not same_anchor_cards(v.checkpoint_cards, saved.checkpoint_cards)
                 or v.elapsed_s is None
                 or v.elapsed_s < saved.elapsed_s
                 or any(
@@ -116,7 +116,7 @@ def resume_once(connector, original, saved, stamp: datetime, authorize: Callable
             or view.elapsed_s != old.elapsed_s
             or view.distance_m != old.distance_m
             or view.completed_checkpoints != 0
-            or view.checkpoint_cards != old.checkpoint_cards
+            or not same_anchor_cards(view.checkpoint_cards, old.checkpoint_cards)
             or view.gps_label != GPS_READY_LABEL
             or any(
                 i != "start_controls_and_current_record_identity_unverified" for i in view.issues

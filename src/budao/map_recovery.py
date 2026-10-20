@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 from shapely.geometry import LineString, Point
 from shapely.ops import nearest_points
 
@@ -164,6 +164,36 @@ def refined_target_center(image, point):
     return PixelPoint(x=float(xs.mean()), y=float(ys.mean()))
 
 
+def same_map_viewport(before: Image.Image, after: Image.Image, target: PixelPoint) -> bool:
+    """比较轨迹覆盖物和打卡标记，不把底图瓦片/地名加载误报成视口移动。"""
+    if before.size != after.size:
+        return False
+    masks = []
+    for image in (before, after):
+        rgb = np.asarray(image.convert("RGB"))
+        mask = (rgb[:, :, 1] > 220) & (rgb[:, :, 0] < 60) & (rgb[:, :, 2] < 60)
+        if not 100 <= mask.sum() <= mask.size / 4:
+            return False
+        masks.append(mask)
+    if not 0.99 <= masks[0].sum() / masks[1].sum() <= 1.01:
+        return False
+    expanded = [
+        np.asarray(Image.fromarray((mask * 255).astype("uint8")).filter(ImageFilter.MaxFilter(3)))
+        > 0
+        for mask in masks
+    ]
+    if any(
+        (mask & other).sum() / mask.sum() < 0.995
+        for mask, other in zip(masks, reversed(expanded), strict=True)
+    ):
+        return False
+    try:
+        first, second = (refined_target_center(image, target) for image in (before, after))
+    except ValueError:
+        return False
+    return math.hypot(first.x - second.x, first.y - second.y) <= 1
+
+
 class MapRecovery:
     def __init__(self, root, config, connector, dispatcher, *, trace_sources=()):
         self.root, self.config = root, config
@@ -312,13 +342,13 @@ class MapRecovery:
             ),
             CROP,
         )
-        fresh = np.asarray(Image.open(io.BytesIO(fresh_png)).convert("RGB"), dtype=float)
-        if np.sqrt(np.mean((fresh - np.asarray(cropped, dtype=float)) ** 2)) > 3:
+        target_pixel = refined_target_center(cropped, advice.target)
+        fresh = Image.open(io.BytesIO(fresh_png)).convert("RGB")
+        if not same_map_viewport(cropped, fresh, target_pixel):
             raise ValueError("模型期间地图视口改变，标定失效")
         registration = TraceRegistration(
             d.planner, [advice.near_turn, advice.far_turn, advice.current], [near, far, actual]
         )
-        target_pixel = refined_target_center(cropped, advice.target)
         target, predicted = registration.validate_range(target_pixel, actual, card.distance_m)
         # Translate the map's received coordinate space back to this worker's
         # command position. This is a measured local adapter offset, not a jump.

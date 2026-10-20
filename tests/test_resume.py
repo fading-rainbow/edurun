@@ -148,3 +148,25 @@ def test_assigned_target_is_inherited_from_actual_two_frame_resume_without_armin
     clock[0] = 23
     d.resume(p)
     assert d.controller.active_name == "点4" and not w.engine.enabled and not b.locations
+
+
+@pytest.mark.parametrize("delta,accepted", [(0.97, True), (5.01, False)])
+def test_resume_range_refresh_is_bounded_to_saved_card_not_mistaken_for_identity(delta, accepted):
+    data = proof().model_dump()
+    keys = ("saved_pause", "first_paused", "second_paused", "first_running", "second_running")
+    for key in keys:
+        data[key]["inspection"]["checkpoint_cards"] = [
+            {
+                "number": 1,
+                "state": "assigned",
+                "name": "点4",
+                "distance_m": 120 + (delta if key != "saved_pause" else 0),
+            }
+        ]
+    if accepted:
+        result = ResumeWitness.model_validate(data)
+        assert result.saved_pause.inspection.checkpoint_cards[0].distance_m == 120
+        assert result.second_running.inspection.checkpoint_cards[0].distance_m == 120 + delta
+    else:
+        with pytest.raises(ValueError):
+            ResumeWitness.model_validate(data)

@@ -6,10 +6,16 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from budao.checkpoint_vision import CheckpointPixels
-from budao.map_recovery import MapRecovery, ReceivedAnchors, TraceRegistration, received_trace
+from budao.map_recovery import (
+    MapRecovery,
+    ReceivedAnchors,
+    TraceRegistration,
+    received_trace,
+    same_map_viewport,
+)
 from budao.models import GeoPoint, PixelPoint
 from budao.routes import RoutePlanner, distance
 from budao.simulation import demo_config
@@ -176,6 +182,43 @@ def test_short_noise_on_straight_trace_cannot_become_supported_turn(tmp_path):
         received_trace(f, p, start_frame_id="frame-0", start_request_id="a" * 32)
 
 
+def viewport(*, shift=0, marker_shift=0):
+    image = Image.new("RGB", (600, 400), "white")
+    draw = ImageDraw.Draw(image)
+    draw.line(
+        [(40 + shift, 300), (200 + shift, 300), (200 + shift, 160)], fill=(0, 255, 0), width=8
+    )
+    x, y = 200 + marker_shift, 100
+    draw.ellipse((x - 20, y - 20, x + 20, y + 20), fill="black")
+    draw.ellipse((x - 7, y - 7, x + 7, y + 7), fill="white")
+    return image
+
+
+def test_base_tile_loading_is_not_viewport_motion_when_actual_overlays_are_unchanged():
+    before, after = viewport(), viewport()
+    ImageDraw.Draw(after).rectangle((310, 20, 590, 200), fill=(180, 210, 240))
+    rmse = np.sqrt(np.mean((np.asarray(before).astype(float) - np.asarray(after)) ** 2))
+    assert rmse > 3
+    assert same_map_viewport(before, after, PixelPoint(x=200, y=100))
+
+
+@pytest.mark.parametrize("shift,marker_shift", [(4, 0), (0, 3), (10, 10)])
+def test_trace_or_marker_movement_still_invalidates_viewport(shift, marker_shift):
+    assert not same_map_viewport(
+        viewport(), viewport(shift=shift, marker_shift=marker_shift), PixelPoint(x=200, y=100)
+    )
+
+
+def test_missing_or_unknown_overlay_cannot_pass_a_viewport_check():
+    before = viewport()
+    for after in (
+        Image.new("RGB", before.size, "white"),
+        Image.new("RGB", before.size, (0, 255, 0)),
+        Image.new("RGB", (300, 200), "white"),
+    ):
+        assert not same_map_viewport(before, after, PixelPoint(x=200, y=100))
+
+
 def map_component(tmp_path, monkeypatch, confidences, *, approach_only=False):
     """合成协议接头；像素配准几何由前面的独立测试覆盖，不连接实际设备。"""
     from test_runtime import frame, witness
@@ -241,6 +284,7 @@ def map_component(tmp_path, monkeypatch, confidences, *, approach_only=False):
         ),
     )
     monkeypatch.setattr("budao.map_recovery.refined_target_center", lambda _im, p: p)
+    monkeypatch.setattr("budao.map_recovery.same_map_viewport", lambda *_: True)
     confidence = iter(confidences)
 
     def locate(_png, **kwargs):
@@ -274,6 +318,14 @@ def test_visible_markers_use_existing_roads_without_guessing_hidden_map_roads(
     assert (
         json.loads((evidence / "map-advice-1.json").read_text())["navigation_authorized"] is False
     )
+
+
+def test_actual_viewport_change_still_blocks_candidate_publication(tmp_path, monkeypatch):
+    r, d, _, _, _ = map_component(tmp_path, monkeypatch, [0.99])
+    monkeypatch.setattr("budao.map_recovery.same_map_viewport", lambda *_: False)
+    with pytest.raises(ValueError, match="视口改变"):
+        r.resolve(lambda: True)
+    assert not d.observer.navigation_candidates
 
 
 def test_unseen_markers_allow_only_one_map_zoom_and_two_distinct_observations(

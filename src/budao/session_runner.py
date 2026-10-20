@@ -13,6 +13,7 @@ from .foreground_motion import ForegroundMotionClient
 from .gps_reception import received_gps_matches
 from .portal import RecordRecoveryRequired
 from .raw_motion import RecordedProbeClip
+from .resume import ResumeWitness
 from .runtime import RuntimeDispatcher
 from .sensor_probe import INJECTION, NORMAL, sensor_mode
 from .start_connector import GPSReadinessTimeout, StartConnector
@@ -132,6 +133,9 @@ class SessionRunner:
         """有真实开始凭据后有界等待定位；只刷新同一锚点，不启动输入/路线。"""
         deadline = self.clock() + 10
         previous = proof.second_running.inspection
+        card_reference = (
+            proof.saved_pause.inspection if isinstance(proof, ResumeWitness) else previous
+        )
 
         def permitted():
             return self.clock() < deadline and not cancel.is_set() and authorize() is True
@@ -148,7 +152,7 @@ class SessionRunner:
             if (
                 not self._eligible_motion(v, allow_weak_gps=True)
                 or v.distance_m != previous.distance_m
-                or not same_anchor_cards(v.checkpoint_cards, previous.checkpoint_cards)
+                or not same_anchor_cards(v.checkpoint_cards, card_reference.checkpoint_cards)
                 or not previous.elapsed_s <= v.elapsed_s <= previous.elapsed_s + 15
                 or not 0 <= self.clock() - cap.frame.sampled_at < 2
             ):

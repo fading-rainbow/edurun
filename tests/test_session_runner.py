@@ -471,6 +471,56 @@ def test_same_anchor_bootstrap_keeps_dynamic_card_range_without_rewriting_frame(
     assert not m.started and "update" not in d.calls
 
 
+@pytest.mark.parametrize("current_range,accepted", [(124.97, True), (128, False)])
+def test_resume_bootstrap_range_tolerance_cannot_accumulate_across_proof_phases(
+    tmp_path, current_range, accepted
+):
+    import threading
+
+    from test_resume import proof as resume_proof
+
+    from budao.resume import ResumeWitness
+
+    r, _, c, d, m = setup(tmp_path)
+    data = resume_proof().model_dump()
+    for key in ("saved_pause", "first_paused", "second_paused", "first_running", "second_running"):
+        data[key]["inspection"]["checkpoint_cards"] = [
+            {
+                "number": 1,
+                "state": "assigned",
+                "name": "点4",
+                "distance_m": 120 if key == "saved_pause" else 124,
+            }
+        ]
+    p = ResumeWitness.model_validate(data)
+    captured = c.capture()
+    current = frame(24, assigned="点4", distance_m=60, elapsed=583)
+    current = current.model_copy(
+        update={
+            "inspection": current.inspection.model_copy(
+                update={
+                    "checkpoint_cards": (
+                        current.inspection.checkpoint_cards[0].model_copy(
+                            update={"distance_m": current_range}
+                        ),
+                    )
+                }
+            )
+        }
+    )
+    c.capture = lambda **_: RunCapture(
+        current, captured.hierarchy, None, captured.android_observed_ns, captured.motion_snapshot
+    )
+    d.observer.confirmed_names = frozenset({"点4"})
+    r.clock = lambda: 24.1
+    if accepted:
+        assert r._initial_motion_frame(p, threading.Event(), lambda: True).frame == current
+    else:
+        with pytest.raises(ValueError, match="会话"):
+            r._initial_motion_frame(p, threading.Event(), lambda: True)
+    assert not m.started and "update" not in d.calls
+
+
 @pytest.mark.parametrize("cancelled", [False, True])
 def test_input_start_failure_or_cancellation_cannot_prime_route(tmp_path, monkeypatch, cancelled):
     import threading
