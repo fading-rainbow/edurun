@@ -210,6 +210,45 @@ def test_changed_mode_owner_is_not_force_stopped_or_globally_reset(tmp_path):
     assert not any("force-stop" in call or "enable" in call for call in b.calls)
 
 
+def test_expired_own_window_uses_normal_pause_recovery_without_another_start(tmp_path, monkeypatch):
+    r, _b, c, _d, _m = setup(tmp_path)
+    c.expired = True
+    r.recover_expired_windows = True
+    calls = []
+
+    def recover(cancel, authorize, *, pause_record=False):
+        assert not cancel.is_set() and authorize() is True and pause_record is True
+        calls.append(1)
+        c.expired = False
+        return 0.1
+
+    monkeypatch.setattr(r, "_human_wait", recover)
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "finish_ready" and result["transient_input_recoveries"] == 1
+    assert calls == [1] and c.calls.count("begin") == 1 and result["records_submitted"] == 0
+
+
+def test_failed_expired_window_recovery_preserves_record(tmp_path, monkeypatch):
+    r, b, c, _d, _m = setup(tmp_path)
+    r.recover_expired_windows = True
+    c.expired = True
+    monkeypatch.setattr(r, "_human_wait", lambda *_a, **_kw: None)
+    result = r.run(lambda: True, lambda _: None)
+    assert result["state"] == "paused" and result["records_submitted"] == 0 and b.mode == NORMAL
+    assert c.calls.count("begin") == 1
+
+
+def test_expired_window_recovery_is_bounded_not_an_infinite_restart(tmp_path, monkeypatch):
+    r, _b, c, _d, _m = setup(tmp_path)
+    r.recover_expired_windows = True
+    c.expired = True
+    r.maximum_s = 10
+    calls = []
+    monkeypatch.setattr(r, "_human_wait", lambda *_a, **_kw: calls.append(1) or 0.1)
+    result = r.run(lambda: True, lambda _: None)
+    assert calls == [1, 1, 1] and result["state"] == "error" and c.calls.count("begin") == 1
+
+
 def test_cleanup_failure_detail_stays_private_and_does_not_clear_unknown_state(
     tmp_path, monkeypatch
 ):

@@ -89,10 +89,10 @@ def pause_progress_matches(status, view):
 
 
 def resume_trace_sources(root: Path, directory: Path, original: StartWitness):
-    """最多四代已消费且双向关联的本任务续跑证据；不扫描无关运行目录。"""
+    """最多八个已消费且双向关联的本任务目录；实际输入仍受五文件/4MB上限。"""
     runs = root.resolve() / ".local" / "runs"
     sources, seen = [], set()
-    for _ in range(4):
+    for _ in range(8):
         directory = private_file(root, directory, must_exist=False)
         if directory.parent != runs or directory in seen or not directory.is_dir():
             raise ValueError("续跑接收证据目录越界、循环或缺失")
@@ -129,7 +129,7 @@ def resume_trace_sources(root: Path, directory: Path, original: StartWitness):
         if child != directory or claim.get("retry_allowed") is not False:
             raise ValueError("续跑父子归属未双向确认")
         directory = parent
-    raise ValueError("续跑接收证据链超过四代，不自动继续")
+    raise ValueError("续跑归属证据链超过八个目录，不自动继续")
 
 
 def verify_motion_evidence(root: Path, path: Path, clip) -> bool:
@@ -605,6 +605,7 @@ class LiveRuntime:
             refresh_gps=refresh_gps,
             refresh_started_gps=refresh_started_gps,
             wait_for_human=True,
+            recover_expired_windows=True,
         )
         runner.save_authorized = self.settings.normal_save_authorized
         recovery = None

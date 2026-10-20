@@ -53,6 +53,7 @@ class SessionRunner:
         resume_start: Callable | None = None,
         resolve_checkpoint: Callable | None = None,
         rollover_enabled: bool = False,
+        recover_expired_windows: bool = False,
     ):
         if (
             not isinstance(connector, StartConnector)
@@ -67,6 +68,7 @@ class SessionRunner:
             or type(maximum_s) not in (int, float)
             or not math.isfinite(maximum_s)
             or type(rollover_enabled) is not bool
+            or type(recover_expired_windows) is not bool
             or (rollover_enabled and clip.duration_s * motion.replay_passes < 900)
             or not 0
             < maximum_s
@@ -101,6 +103,7 @@ class SessionRunner:
             raise ValueError("地图恢复必须是本机绑定的回调")
         self.resolve_checkpoint = resolve_checkpoint
         self.rollover_enabled = rollover_enabled
+        self.recover_expired_windows = recover_expired_windows
         self.used = False
         self.started = False
         self.lock = threading.Lock()
@@ -228,6 +231,7 @@ class SessionRunner:
             "one_click_workflow_verified": False,
         }
         mode_changed = False
+        recovered_windows = 0
         try:
             publish(dict(report))
             if cancel.is_set() or authorize() is not True:
@@ -395,6 +399,34 @@ class SessionRunner:
                     window_deadline = self.clock() + 600
                     continue
                 sender = cap.motion_snapshot
+                if (
+                    self.recover_expired_windows
+                    and recovered_windows < 3
+                    and sender
+                    and sender.get("raw_motion_probe", {}).get("state") == "lease_expired"
+                    and sender["raw_motion_probe"].get("request_id") == self.motion.request
+                    and sender["raw_motion_probe"].get("clip_sha256") == self.clip.sha256
+                    and sender["raw_motion_probe"].get("bounded_stream")
+                    is self.motion.bounded_stream
+                    and sender["raw_motion_probe"].get("replay_passes") == self.motion.replay_passes
+                    and self._eligible_motion(view)
+                ):
+                    # 不重启已过期nonce，也不放宽两秒租约。正常暂停App、STOP旧任务，
+                    # 经既有换窗流程创建全新任务后继续；单次执行最多恢复三次。
+                    recovered_windows += 1
+                    report.update(
+                        state="recovering",
+                        message="观察短暂超时；正常暂停并核对新输入窗口",
+                        transient_input_recoveries=recovered_windows,
+                    )
+                    publish(dict(report))
+                    waited = self._human_wait(cancel, authorize, pause_record=True)
+                    if waited is None:
+                        report.update(state="paused", message="新输入窗口未确认；保留原记录")
+                        break
+                    deadline += waited
+                    window_deadline = self.clock() + 600
+                    continue
                 if (
                     not sender
                     or sender["raw_motion_probe"]["request_id"] != self.motion.request

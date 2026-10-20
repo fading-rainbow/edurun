@@ -62,11 +62,23 @@ def test_trace_chain_rejects_wrong_identity_ownership_cycle_or_path(tmp_path, ki
 
 
 def test_trace_chain_limit_is_bounded(tmp_path):
+    directories = [record(tmp_path, f"native-{i}") for i in range(9)]
+    for parent, child in zip(directories, directories[1:], strict=False):
+        link(parent, child)
+    with pytest.raises(ValueError, match="八个"):
+        resume_trace_sources(tmp_path, directories[-1], witness())
+
+
+def test_five_owned_directories_with_only_two_actual_input_files_remain_bounded(tmp_path):
     directories = [record(tmp_path, f"native-{i}") for i in range(5)]
     for parent, child in zip(directories, directories[1:], strict=False):
         link(parent, child)
-    with pytest.raises(ValueError, match="四代"):
-        resume_trace_sources(tmp_path, directories[-1], witness())
+    for directory in directories[1:-1]:
+        (directory / "input-observations.jsonl").unlink()
+    assert resume_trace_sources(tmp_path, directories[-1], witness()) == (
+        directories[-1] / "input-observations.jsonl",
+        directories[0] / "input-observations.jsonl",
+    )
 
 
 @pytest.fixture
