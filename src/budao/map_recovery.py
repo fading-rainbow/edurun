@@ -25,7 +25,7 @@ from .ui_advisor import redacted_ui_image
 from .vision import crop_image
 
 CROP = (0, 366, 720, 932)
-MAX_MAP_CALLS = 6  # 三个未知点，每点最多当前视口+一次缩小；不增加现有key的总额度。
+MAX_MAP_CALLS = 6  # 整个执行最多6次；局部增加缩放机会不增加调用总额或key额度。
 
 
 @dataclass(frozen=True)
@@ -239,11 +239,11 @@ class MapRecovery:
                     continue
         if source is None:
             raise ValueError("没有本次实际接收轨迹的地图标定依据")
-        # 先看实际视口；只有标记/锚点不可见时才允许一次缩小，不能每次恢复都盲目缩放。
+        # 先看实际视口；标记/锚点不可见时最多缩小两次，总调用预算仍是6次。
         map_view = c.ui.device(resourceId="com.lptiyu.tanke:id/textureMapView")
         if map_view.count != 1 or authorize() is not True:
             raise ValueError("地图控件或许可未知")
-        for attempt in range(2):
+        for attempt in range(3):
             cap = c.capture(pixels=True)
             if cap.frame.inspection != view:
                 raise ValueError("地图观察期间原始记录或卡片改变")
@@ -279,7 +279,7 @@ class MapRecovery:
                 for p in (advice.current, advice.target, advice.near_turn, advice.far_turn)
             ):
                 break
-            if attempt or card.distance_m <= 80 or self.calls >= MAX_MAP_CALLS:
+            if attempt == 2 or card.distance_m <= 80 or self.calls >= MAX_MAP_CALLS:
                 raise ValueError("地图像素置信度或锚点不足")
             current = c.capture().frame.inspection
             if current != view or authorize() is not True:

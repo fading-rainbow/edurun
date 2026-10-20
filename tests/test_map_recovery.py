@@ -284,11 +284,29 @@ def test_unseen_markers_allow_only_one_map_zoom_and_two_distinct_observations(
     assert len(gestures) == 1 and len(calls) == 2
 
 
-def test_low_confidence_stops_after_one_zoom_without_adding_candidate(tmp_path, monkeypatch):
-    r, d, gestures, calls, evidence = map_component(tmp_path, monkeypatch, [0.1, 0.1])
+def test_low_confidence_stops_after_two_zooms_without_adding_candidate(tmp_path, monkeypatch):
+    r, d, gestures, calls, evidence = map_component(tmp_path, monkeypatch, [0.1, 0.1, 0.1])
     with pytest.raises(ValueError, match="置信度"):
         r.resolve(lambda: True)
-    assert len(gestures) == 1 and len(calls) == 2 and not d.observer.navigation_candidates
+    assert len(gestures) == 2 and len(calls) == 3 and not d.observer.navigation_candidates
+
+
+def test_second_zoom_can_reveal_clipped_start_and_target_without_extra_total_budget(
+    tmp_path, monkeypatch
+):
+    r, d, gestures, calls, _ = map_component(tmp_path, monkeypatch, [0.0, 0.0, 0.99])
+    r.resolve(lambda: True)
+    assert len(gestures) == 2 and len(calls) == 3
+    assert "新点" in d.observer.navigation_candidates
+
+
+def test_remaining_total_call_budget_can_stop_before_second_zoom(tmp_path, monkeypatch):
+    r, d, gestures, calls, evidence = map_component(tmp_path, monkeypatch, [0.0])
+    r.calls = 5
+    with pytest.raises(ValueError):
+        r.resolve(lambda: True)
+    assert r.calls == 6 and len(calls) == 1 and not gestures
+    assert not d.observer.navigation_candidates
     assert (evidence / "map-recovery-failures.jsonl").exists()
 
 
