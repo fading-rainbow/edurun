@@ -119,7 +119,15 @@ def received_trace(
     simplified = list(LineString([planner.xy(p) for p in points]).simplify(2).coords)
     current, turns = points[-1], []
     for i in range(len(simplified) - 2, 0, -1):
-        a, b, c = (np.asarray(simplified[j]) for j in (i - 1, i, i + 1))
+        b = np.asarray(simplified[i])
+        # GPS采样的圆角可被RDP保留为相距几米的两个真实顶点。支持方向应跨过
+        # 这些短邻边，而不是丢掉整个转角；锚点仍是原始接收点，不计算虚拟交点。
+        before, after = i - 1, i + 1
+        while before > 0 and np.linalg.norm(b - simplified[before]) < 10:
+            before -= 1
+        while after < len(simplified) - 1 and np.linalg.norm(simplified[after] - b) < 10:
+            after += 1
+        a, c = np.asarray(simplified[before]), np.asarray(simplified[after])
         incoming, outgoing = b - a, c - b
         if min(np.linalg.norm(incoming), np.linalg.norm(outgoing)) < 10:
             continue
@@ -217,7 +225,17 @@ class MapRecovery:
                     near, far, actual = anchors.near, anchors.far, anchors.current
                     source = path
                     break
-                except ValueError:
+                except ValueError as error:
+                    with (c.evidence / "map-trace-rejections.jsonl").open(
+                        "a", encoding="utf-8"
+                    ) as stream:
+                        stream.write(
+                            json.dumps(
+                                {"source_record": path.parent.name, "detail": str(error)},
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
                     continue
         if source is None:
             raise ValueError("没有本次实际接收轨迹的地图标定依据")

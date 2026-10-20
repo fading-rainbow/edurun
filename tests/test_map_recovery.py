@@ -129,6 +129,53 @@ def test_arbitrary_trace_endpoint_cannot_be_substituted_for_original_start(tmp_p
         received_trace(f, p, start_frame_id="frame-5", start_request_id="a" * 32)
 
 
+def test_rounded_received_turn_can_use_long_support_without_inventing_corner(tmp_path):
+    p, f, _ = trace_file(tmp_path)
+    rows = [json.loads(line) for line in f.read_text().splitlines()]
+    start = GeoPoint(
+        lon=rows[0]["gps_reception"]["longitude"], lat=rows[0]["gps_reception"]["latitude"]
+    )
+    x, y = p.xy(start)
+    vertices = [(x, y), (x + 35, y), (x + 38.8, y + 3.8), (x + 38.8, y + 40)]
+    points = []
+    for a, b in zip(vertices, vertices[1:], strict=False):
+        for alpha in np.linspace(0, 1, 15):
+            points.append(p.geo(tuple(np.asarray(a) * (1 - alpha) + np.asarray(b) * alpha)))
+    template = rows[0]
+    received = []
+    for i, point in enumerate(points):
+        received.append(
+            template
+            | {
+                "frame_id": f"rounded-{i}",
+                "gps_reception": template["gps_reception"]
+                | {"longitude": point.lon, "latitude": point.lat},
+            }
+        )
+    f.write_text("\n".join(json.dumps(row) for row in received))
+    original = f.read_bytes()
+    anchors = received_trace(f, p, start_frame_id="rounded-0", start_request_id="a" * 32)
+    assert anchors.far_kind == "start_marker"
+    assert min(distance(anchors.near, point) for point in points) < 0.01
+    assert distance(anchors.far, points[0]) < 0.01
+    assert f.read_bytes() == original
+
+
+def test_short_noise_on_straight_trace_cannot_become_supported_turn(tmp_path):
+    p, f, _ = trace_file(tmp_path)
+    rows = [json.loads(line) for line in f.read_text().splitlines()]
+    start = GeoPoint(
+        lon=rows[0]["gps_reception"]["longitude"], lat=rows[0]["gps_reception"]["latitude"]
+    )
+    x, y = p.xy(start)
+    for i, row in enumerate(rows):
+        point = p.geo((x + i * 2, y + (0.5 if i % 2 else 0)))
+        row["gps_reception"].update(longitude=point.lon, latitude=point.lat)
+    f.write_text("\n".join(json.dumps(row) for row in rows))
+    with pytest.raises(ValueError, match="转角不足"):
+        received_trace(f, p, start_frame_id="frame-0", start_request_id="a" * 32)
+
+
 def map_component(tmp_path, monkeypatch, confidences, *, approach_only=False):
     """合成协议接头；像素配准几何由前面的独立测试覆盖，不连接实际设备。"""
     from test_runtime import frame, witness
