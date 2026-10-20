@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .models import GeoPoint
 from .routes import RoutePlanner, distance
-from .target import same_anchor_cards, same_startup_anchor_cards
+from .target import same_anchor_cards, same_resume_cards, same_startup_anchor_cards
 
 
 @dataclass(frozen=True)
@@ -109,6 +109,11 @@ def refresh_started_anchor(connector, proof, initial: GeoPoint, authorize):
         and previous.completed_checkpoints == 0
         else same_anchor_cards
     )
+    if isinstance(proof, ResumeWitness):
+
+        def cards_match(current, reference):
+            return same_resume_cards(current, reference, pending_refresh_m=proof.pending_refresh_m)
+
     if (
         v.package != previous.package
         or v.activity != previous.activity

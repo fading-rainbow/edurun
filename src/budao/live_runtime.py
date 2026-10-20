@@ -662,7 +662,9 @@ class LiveRuntime:
             def continue_start(_new_motion_request, authorize):
                 with (directory / "recovery-claimed.json").open("x", encoding="utf-8") as stream:
                     stream.write(json.dumps({"child": str(evidence), "retry_allowed": False}))
-                return resume_once(connector, original, saved, stamp, authorize)
+                return resume_once(
+                    connector, original, saved, stamp, authorize, pending_refresh_m=3
+                )
 
             runner.resume_start = continue_start
             if recovery is not None:

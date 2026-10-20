@@ -60,6 +60,32 @@ def same_anchor_cards(current, reference) -> bool:
     return True
 
 
+def same_resume_cards(current, reference, *, pending_refresh_m=0) -> bool:
+    """保留原始卡片值；仅显式续跑允许待分配倒计程最多减少3米，不积累容差。"""
+    if pending_refresh_m not in (0, 3) or type(pending_refresh_m) is not int:
+        return False
+    if same_anchor_cards(current, reference):
+        return True
+    if pending_refresh_m == 0 or not 1 <= len(current) == len(reference) <= 3:
+        return False
+    if current[:-1] != reference[:-1]:
+        return False
+    actual, old = current[-1], reference[-1]
+    return (
+        isinstance(actual, CheckpointCard)
+        and isinstance(old, CheckpointCard)
+        and old.state == "pending"
+        and old.name is None
+        and actual.model_dump(exclude={"allocation_remaining_m"})
+        == old.model_dump(exclude={"allocation_remaining_m"})
+        and type(old.allocation_remaining_m) is int
+        and old.allocation_remaining_m > pending_refresh_m
+        and type(actual.allocation_remaining_m) is int
+        and 0 < actual.allocation_remaining_m <= old.allocation_remaining_m
+        and old.allocation_remaining_m - actual.allocation_remaining_m <= pending_refresh_m
+    )
+
+
 def same_startup_anchor_cards(current, reference) -> bool:
     """仅供新开始、零里程衔接：待分配倒计程可相对原凭据减少至多3米。
 

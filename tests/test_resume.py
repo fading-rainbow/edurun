@@ -99,6 +99,27 @@ def test_partial_resume_rejects_changed_completion_count_or_order():
             ResumeWitness.model_validate(data)
 
 
+@pytest.mark.parametrize("delta,accepted", [(1, True), (3, True), (4, False), (-1, False)])
+def test_explicit_resume_pending_countdown_refresh_never_rewrites_actual_frames(delta, accepted):
+    p = proof()
+    data = p.model_dump()
+    data["pending_refresh_m"] = 3
+    for key in ("first_running", "second_running"):
+        data[key]["inspection"]["checkpoint_cards"][-1]["allocation_remaining_m"] -= delta
+    if accepted:
+        new = ResumeWitness.model_validate(data)
+        assert new.saved_pause.inspection.checkpoint_cards[-1].allocation_remaining_m == 100
+        assert (
+            new.second_running.inspection.checkpoint_cards[-1].allocation_remaining_m == 100 - delta
+        )
+        strict = dict(data, pending_refresh_m=0)
+        with pytest.raises(ValueError):
+            ResumeWitness.model_validate(strict)
+    else:
+        with pytest.raises(ValueError):
+            ResumeWitness.model_validate(data)
+
+
 @pytest.mark.parametrize(
     "changes",
     [

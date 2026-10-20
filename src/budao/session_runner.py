@@ -23,6 +23,7 @@ from .target import (
     TARGET,
     TargetInspection,
     same_anchor_cards,
+    same_resume_cards,
     same_startup_anchor_cards,
 )
 from .ui import KNOWN_AD_COMPONENT, dismiss_known_ad, focused_component
@@ -163,6 +164,12 @@ class SessionRunner:
             and previous.completed_checkpoints == 0
             else same_anchor_cards
         )
+        if isinstance(proof, ResumeWitness):
+
+            def cards_match(current, reference):
+                return same_resume_cards(
+                    current, reference, pending_refresh_m=proof.pending_refresh_m
+                )
 
         def permitted():
             return self.clock() < deadline and not cancel.is_set() and authorize() is True

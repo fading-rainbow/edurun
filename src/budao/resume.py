@@ -5,12 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 
 from .models import StrictModel
 from .runtime import CapturedRunFrame, StartWitness
-from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, same_anchor_cards
+from .target import GPS_READY_LABEL, RUN_ACTIVITY, TARGET, same_resume_cards
 from .ui import focused_component
 
 PAUSE_CLOCK_DETAIL = "暂停证据时钟已失效，需用户处理"
@@ -51,6 +52,7 @@ class ResumeWitness(StrictModel):
     action_at: float = Field(ge=0)
     first_running: CapturedRunFrame
     second_running: CapturedRunFrame
+    pending_refresh_m: Literal[0, 3] = 0
 
     @property
     def frames(self):
@@ -87,7 +89,11 @@ class ResumeWitness(StrictModel):
                 or v.counter_label != "已打卡"
                 or v.completed_checkpoints != saved.completed_checkpoints
                 or v.distance_m != saved.distance_m
-                or not same_anchor_cards(v.checkpoint_cards, saved.checkpoint_cards)
+                or not same_resume_cards(
+                    v.checkpoint_cards,
+                    saved.checkpoint_cards,
+                    pending_refresh_m=self.pending_refresh_m,
+                )
                 or v.elapsed_s is None
                 or v.elapsed_s < saved.elapsed_s
                 or any(
@@ -115,13 +121,17 @@ class ResumeWitness(StrictModel):
         return self
 
 
-def resume_once(connector, original, saved, stamp: datetime, authorize: Callable):
+def resume_once(
+    connector, original, saved, stamp: datetime, authorize: Callable, *, pending_refresh_m=0
+):
     """No new Start, GPS movement, biometric handling, or submission here."""
     b = connector.bridge
     if not isinstance(original, StartWitness) or not isinstance(saved, CapturedRunFrame):
         raise ValueError("续跑只接受已验证的本机凭据")
     original = StartWitness.model_validate(original.model_dump())
     saved = CapturedRunFrame.model_validate(saved.model_dump())
+    if type(pending_refresh_m) is not int or pending_refresh_m not in (0, 3):
+        raise ValueError("续跑倒计程刷新容差只允许显式0或3米")
     if b.run("shell", "date", "+%F").strip() != stamp.strftime("%Y-%m-%d"):
         raise ValueError("旧会话跨日，不续跑")
     if original.request_id in connector.used_requests or authorize() is not True:
@@ -137,7 +147,9 @@ def resume_once(connector, original, saved, stamp: datetime, authorize: Callable
             or view.elapsed_s != old.elapsed_s
             or view.distance_m != old.distance_m
             or view.completed_checkpoints != old.completed_checkpoints
-            or not same_anchor_cards(view.checkpoint_cards, old.checkpoint_cards)
+            or not same_resume_cards(
+                view.checkpoint_cards, old.checkpoint_cards, pending_refresh_m=pending_refresh_m
+            )
             or view.gps_label != GPS_READY_LABEL
             or any(
                 i != "start_controls_and_current_record_identity_unverified" for i in view.issues
@@ -178,6 +190,7 @@ def resume_once(connector, original, saved, stamp: datetime, authorize: Callable
                     action_at=action_at,
                     first_running=running,
                     second_running=frame,
+                    pending_refresh_m=pending_refresh_m,
                 )
                 (connector.evidence / "resume-witness.json").write_text(
                     proof.model_dump_json(indent=2), "utf-8"
