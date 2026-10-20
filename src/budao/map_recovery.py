@@ -298,6 +298,24 @@ def received_trace(
                 recent_fixes=tuple(recent),
                 range_observed_ns=latest_observed,
             )
+    # 首点可能在转角附近就分配，短转角基线不足时仍可使用明确起点图标。
+    # 起点必须来自原始开始帧及其任务的实际接收，绝不使用任意轨迹端点。
+    if (
+        pair_mode
+        and start_point is not None
+        and distance(start_point, points[0]) < 5
+        and distance(start_point, current) >= 40
+    ):
+        return ReceivedAnchors(
+            near=start_point,
+            far=None,
+            current=current,
+            far_kind="start_marker_pair",
+            recent_fixes=tuple(recent),
+            range_observed_ns=latest_observed,
+            near_kind="received_start_marker",
+            near_supports=(start_point,),
+        )
     # 第一随机点可能在走完一个转角时就分配。只有原始开始凭据对应的那一帧
     # 独立接收位置，才可与明确的地图起始图标配对；任意线段端点不是起点证明。
     if (
@@ -579,9 +597,12 @@ class MapRecovery:
             "near_feature_kind": anchors.near_kind,
             "near_feature_supports": [p.model_dump() for p in anchors.near_supports],
             "registration_features": {
-                "derived_turn": near.model_dump(),
+                "anchor": near.model_dump(),
                 "received_current": actual.model_dump(),
             },
+            "start_anchor_frame_id": original.before.frame_id
+            if anchors.near_kind == "received_start_marker"
+            else None,
             "using_known_roads": using_known_roads,
             "approach_only": approach_only,
             "approach_gap_m": approach_gap_m,

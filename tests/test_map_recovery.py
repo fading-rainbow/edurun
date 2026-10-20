@@ -373,6 +373,49 @@ def test_pair_mode_labels_supported_intersection_as_derived_not_a_received_fix(t
     assert f.read_bytes() == original
 
 
+@pytest.mark.parametrize("binding", ["correct", "missing_frame", "wrong_request", "short_baseline"])
+def test_pair_mode_uses_only_bound_real_start_marker_when_nearest_corner_is_too_close(
+    tmp_path, binding
+):
+    p, f, _ = trace_file(tmp_path)
+    template = json.loads(f.read_text().splitlines()[0])
+    first = GeoPoint(
+        lon=template["gps_reception"]["longitude"], lat=template["gps_reception"]["latitude"]
+    )
+    x, y = p.xy(first)
+    length = 20 if binding == "short_baseline" else 80
+    vertices = [(x, y), (x + length, y), (x + length, y + 15)]
+    points = [
+        p.geo(tuple(np.asarray(a) * (1 - t) + np.asarray(b) * t))
+        for a, b in zip(vertices, vertices[1:], strict=False)
+        for t in np.linspace(0, 1, 15)
+    ]
+    rows = [
+        template
+        | {
+            "frame_id": f"actual-{i}",
+            "gps_reception": template["gps_reception"] | {"longitude": pt.lon, "latitude": pt.lat},
+        }
+        for i, pt in enumerate(points)
+    ]
+    f.write_text("\n".join(json.dumps(row) for row in rows))
+    original = f.read_bytes()
+    kwargs = {
+        "pair_mode": True,
+        "start_frame_id": "missing" if binding == "missing_frame" else "actual-0",
+        "start_request_id": "b" * 32 if binding == "wrong_request" else "a" * 32,
+    }
+    if binding != "correct":
+        with pytest.raises(ValueError):
+            received_trace(f, p, **kwargs)
+    else:
+        a = received_trace(f, p, **kwargs)
+        assert a.near_kind == "received_start_marker" and a.far_kind == "start_marker_pair"
+        assert a.far is None and distance(a.near, points[0]) < 0.01
+        assert distance(a.current, points[-1]) < 0.01 and len(a.near_supports) == 1
+    assert f.read_bytes() == original
+
+
 def test_short_noise_on_straight_trace_cannot_become_supported_turn(tmp_path):
     p, f, _ = trace_file(tmp_path)
     rows = [json.loads(line) for line in f.read_text().splitlines()]

@@ -83,3 +83,11 @@ def test_start_anchor_is_explicitly_requested_and_arbitrary_endpoint_is_forbidde
     with pytest.raises(ValueError):
         c.locate(png(), far_anchor_kind="arbitrary")
     assert len(requests) == 1
+
+
+def test_two_feature_start_marker_prompt_does_not_request_a_nearby_corner():
+    c, requests = client(answer())
+    c.locate(png(), far_anchor_kind="start_marker_pair")
+    prompt = requests[0]["messages"][0]["content"]
+    assert "不是转角" in prompt and "‘始’" in prompt and "绿色对勾" in prompt
+    assert "第一个显著转角" not in prompt and "far_turn本次不参与配准" in prompt
