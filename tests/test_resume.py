@@ -23,6 +23,20 @@ def proof():
     )
 
 
+def progress_proof(completed):
+    names = tuple(f"已完成{i}" for i in range(completed))
+    assigned = "点4" if completed < 3 else None
+    return ResumeWitness(
+        original=witness(),
+        saved_pause=frame(10, names, assigned, control="paused", distance_m=900, elapsed=580),
+        first_paused=frame(20, names, assigned, control="paused", distance_m=900, elapsed=580),
+        second_paused=frame(21, names, assigned, control="paused", distance_m=900, elapsed=580),
+        action_at=21.5,
+        first_running=frame(22, names, assigned, distance_m=900, elapsed=581),
+        second_running=frame(23, names, assigned, distance_m=900, elapsed=582),
+    )
+
+
 @pytest.fixture
 def runtime_setup(monkeypatch):
     return build_runtime_setup.__wrapped__(monkeypatch)
@@ -37,6 +51,52 @@ def test_resume_is_not_a_new_zero_start_and_preserves_current_clock(runtime_setu
     assert d.controller.completed == 0
     with pytest.raises(ValueError):
         d.resume(proof())
+
+
+@pytest.mark.parametrize("completed", [1, 2, 3])
+def test_resume_retains_actual_ordered_progress_without_granting_completed_point_coordinates(
+    runtime_setup, completed
+):
+    d, w, b, clock, _ = runtime_setup
+    clock[0] = 23
+    p = progress_proof(completed)
+    d.resume(p)
+    names = p.saved_pause.inspection.checkpoint_cards[:completed]
+    assert d.controller.completed == completed
+    assert d.controller.completed_names == tuple(c.name for c in names)
+    assert not w.engine.enabled and not b.locations
+    assert "已完成0" not in d.observer.allowed_names
+    with pytest.raises(ValueError):
+        d.observer.navigation_point("已完成0")
+    after = frame(
+        24,
+        tuple(c.name for c in names),
+        "点4" if completed < 3 else None,
+        distance_m=900,
+        elapsed=583,
+    )
+    o = d.observer.observe(after.inspection, after.sampled_at, after.frame_id)
+    assert o.screen == "running" and o.completed_checkpoint_names == d.controller.completed_names
+
+
+def test_completed_only_name_is_not_an_allowed_future_navigation_target(runtime_setup):
+    d, _, _, clock, _ = runtime_setup
+    clock[0] = 23
+    d.resume(progress_proof(1))
+    after = frame(24, ("已完成0",), "已完成0", distance_m=900, elapsed=583)
+    assert d.observer.observe(after.inspection, 24, after.frame_id).screen == "unknown"
+
+
+def test_partial_resume_rejects_changed_completion_count_or_order():
+    p = progress_proof(2)
+    for changed in (
+        frame(23, ("已完成0",), "点4", distance_m=900, elapsed=582),
+        frame(23, ("已完成1", "已完成0"), "点4", distance_m=900, elapsed=582),
+    ):
+        data = p.model_dump()
+        data["second_running"] = changed.model_dump()
+        with pytest.raises(ValueError):
+            ResumeWitness.model_validate(data)
 
 
 @pytest.mark.parametrize(

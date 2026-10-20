@@ -109,7 +109,7 @@ def refresh_started_anchor(connector, proof, initial: GeoPoint, authorize):
         or v.state != "metrics"
         or v.run_control_state != "running"
         or v.counter_label != "已打卡"
-        or v.completed_checkpoints != 0
+        or v.completed_checkpoints != previous.completed_checkpoints
         or v.distance_m != previous.distance_m
         or not same_anchor_cards(v.checkpoint_cards, card_reference.checkpoint_cards)
         or v.elapsed_s is None
@@ -117,7 +117,7 @@ def refresh_started_anchor(connector, proof, initial: GeoPoint, authorize):
         or v.gps_label not in {"GPS信号优", "GPS信号弱"}
         or any(i != "start_controls_and_current_record_identity_unverified" for i in v.issues)
     ):
-        raise ValueError("同位置接续不是刚确认开始的同一零打卡会话")
+        raise ValueError("同位置接续不是刚确认开始的同一打卡进度会话")
 
     def permitted():
         return 0 <= connector.clock() - cap.frame.sampled_at < 2 and authorize() is True

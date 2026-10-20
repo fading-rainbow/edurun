@@ -31,7 +31,7 @@ from .mumu_driver import MuMuPositionWorker
 from .portal import enter_formal_zero
 from .profiles import RunProfile, _load, preflight_profile, private_file
 from .raw_motion import match_recorded_snapshot, prepare_recorded_probe
-from .resume import PAUSE_CLOCK_DETAIL, PauseClockExpired, resume_once
+from .resume import PAUSE_CLOCK_DETAIL, PauseClockExpired, resume_completed_names, resume_once
 from .routes import RoutePlanner
 from .runtime import CapturedRunFrame, RuntimeDispatcher, StartWitness
 from .sensor_probe import NORMAL, sensor_mode
@@ -319,13 +319,14 @@ class LiveRuntime:
             or status.get("one_click_workflow_verified", False) is not False
             or witness.serial != bridge.serial
             or saved.inspection.run_control_state != "paused"
-            or saved.inspection.completed_checkpoints != 0
+            or saved.inspection.completed_checkpoints not in range(4)
             or saved.inspection.elapsed_s is None
             or not 0 < saved.inspection.elapsed_s < 1800
             or not pause_progress_matches(status, saved.inspection)
             or saved.sampled_at <= witness.second_running.sampled_at
         ):
-            raise ValueError("只续接本助手已清理并确认暂停的零打卡记录")
+            raise ValueError("只续接本助手已清理并确认暂停的同一进度记录")
+        resume_completed_names(saved.inspection)
         meta_path = directory / "session-meta.json"
         if meta_path.exists():
             meta = json.loads(meta_path.read_text("utf-8-sig"))

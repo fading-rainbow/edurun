@@ -203,6 +203,80 @@ def test_range_references_are_only_two_latest_distinct_callbacks_within_two_seco
     ]
 
 
+def split_backtracked_trace(tmp_path):
+    p, template_file, _ = trace_file(tmp_path)
+    template = json.loads(template_file.read_text().splitlines()[0])
+    x0, y0, x1, y1 = p.region.bounds
+    x, y = x0 + (x1 - x0) / 4, y0 + (y1 - y0) / 4
+    length = min(x1 - x0, y1 - y0) / 5
+    vertices = [
+        (x, y),
+        (x + length, y),
+        (x + length, y + length),
+        (x + length, y + length * 0.3),
+        (x + length, y + length * 0.7),
+    ]
+    points = []
+    for a, b in zip(vertices, vertices[1:], strict=False):
+        for alpha in np.linspace(0, 1, 15):
+            points.append(p.geo(tuple(np.asarray(a) * (1 - alpha) + np.asarray(b) * alpha)))
+    rows = []
+    for i, point in enumerate(points):
+        observed = (100 + i) * 1_000_000_000
+        rows.append(
+            template
+            | {
+                "frame_id": f"actual-{i}",
+                "sampled_at": 100 + i,
+                "android_observed_ns": observed,
+                "gps_reception": template["gps_reception"]
+                | {
+                    "longitude": point.lon,
+                    "latitude": point.lat,
+                    "last_received_ns": observed - 100_000_000,
+                },
+            }
+        )
+    parent, child = tmp_path / "parent.jsonl", tmp_path / "child.jsonl"
+    parent.write_text("\n".join(json.dumps(row) for row in rows[:20]))
+    child.write_text("\n".join(json.dumps(row) for row in rows[20:]))
+    return p, parent, child, points, rows
+
+
+def test_causal_merge_keeps_root_start_and_ignores_invisible_backtracking_reversals(tmp_path):
+    p, parent, child, points, _ = split_backtracked_trace(tmp_path)
+    originals = (parent.read_bytes(), child.read_bytes())
+    anchors = received_trace(
+        child, p, extra_paths=(parent,), start_frame_id="actual-0", start_request_id="a" * 32
+    )
+    assert anchors.far_kind == "start_marker"
+    assert distance(anchors.far, points[0]) < 0.01
+    assert distance(anchors.current, points[-1]) < 0.01
+    assert distance(anchors.near, points[14]) < 0.01
+    assert originals == (parent.read_bytes(), child.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "change", ["device_clock", "host_clock", "missing_host_clock", "conflicting_frame"]
+)
+def test_merge_does_not_sort_rebooted_clocks_or_relabel_conflicting_frames(tmp_path, change):
+    p, parent, child, _, rows = split_backtracked_trace(tmp_path)
+    new = [dict(row) for row in rows[20:]]
+    if change == "device_clock":
+        new[0]["android_observed_ns"] = 1
+    elif change == "host_clock":
+        new[0]["sampled_at"] = 0
+    elif change == "missing_host_clock":
+        new[0].pop("sampled_at")
+    else:
+        new[0]["frame_id"] = rows[0]["frame_id"]
+    child.write_text("\n".join(json.dumps(row) for row in new))
+    with pytest.raises(ValueError):
+        received_trace(
+            child, p, extra_paths=(parent,), start_frame_id="actual-0", start_request_id="a" * 32
+        )
+
+
 def test_arbitrary_trace_endpoint_cannot_be_substituted_for_original_start(tmp_path):
     p, f, _points = trace_file(tmp_path)
     with pytest.raises(ValueError):

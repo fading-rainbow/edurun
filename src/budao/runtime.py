@@ -242,7 +242,7 @@ class RuntimeDispatcher:
             return Decision(action="pause", reason="路线不连通或驱动/新观察未就绪")
 
     def resume(self, proof) -> None:
-        from .resume import ResumeWitness
+        from .resume import ResumeWitness, resume_completed_names
 
         if not isinstance(proof, ResumeWitness):
             raise ValueError("续跑缺少原生新会话及本次继续动作证据")
@@ -271,6 +271,10 @@ class RuntimeDispatcher:
         self.controller.last_time = current.sampled_at
         self.controller.last_elapsed_s = current.inspection.elapsed_s
         self.controller.distance_m = current.inspection.distance_m
+        completed_names = resume_completed_names(current.inspection)
+        self.controller.completed = current.inspection.completed_checkpoints
+        self.controller.completed_names = completed_names
+        self.observer.resumed_completed_names = frozenset(completed_names)
         self.controller.seen_named_frames.update(f.frame_id for f in proof.frames)
         if target is not None:
             # ResumeWitness已有独立两帧相同卡片；只继承目标身份，不授权运动。

@@ -1,4 +1,4 @@
-"""Explicit recovery of this assistant's paused, zero-checkpoint session only."""
+"""Explicit recovery of this assistant's current paused session with verified ordered progress."""
 
 from __future__ import annotations
 
@@ -18,6 +18,29 @@ PAUSE_CLOCK_DETAIL = "暂停证据时钟已失效，需用户处理"
 
 class PauseClockExpired(ValueError):
     """主机重启等原因使旧单调时钟不可比较；不能重写历史帧时间续接。"""
+
+
+def resume_completed_names(view):
+    """仅继承实际暂停页的有序卡片进度，不授予未知点导航坐标。"""
+    completed, cards = view.completed_checkpoints, view.checkpoint_cards
+    expected = min(3, completed + 1) if type(completed) is int else -1
+    if (
+        type(completed) is not int
+        or not 0 <= completed <= 3
+        or view.counter_label != "已打卡"
+        or len(cards) != expected
+        or tuple(card.number for card in cards) != tuple(range(1, expected + 1))
+        or any(card.state != "completed" or not card.name for card in cards[:completed])
+        or (
+            completed < 3
+            and (
+                cards[-1].state not in {"pending", "assigned"}
+                or (cards[-1].state == "assigned" and not cards[-1].name)
+            )
+        )
+    ):
+        raise ValueError("暂停记录的打卡进度或顺序未确认")
+    return tuple(card.name for card in cards[:completed])
 
 
 class ResumeWitness(StrictModel):
@@ -47,6 +70,7 @@ class ResumeWitness(StrictModel):
             or self.original.second_running.sampled_at >= self.saved_pause.sampled_at
         ):
             raise ValueError("暂停凭据不是原生开始后的本次运行页")
+        resume_completed_names(saved)
         previous = self.saved_pause.sampled_at
         ids = {self.saved_pause.frame_id}
         for index, frame in enumerate(self.frames):
@@ -61,7 +85,7 @@ class ResumeWitness(StrictModel):
                 or v.gps_label
                 not in ({GPS_READY_LABEL} if index < 2 else {GPS_READY_LABEL, "GPS信号弱"})
                 or v.counter_label != "已打卡"
-                or v.completed_checkpoints != 0
+                or v.completed_checkpoints != saved.completed_checkpoints
                 or v.distance_m != saved.distance_m
                 or not same_anchor_cards(v.checkpoint_cards, saved.checkpoint_cards)
                 or v.elapsed_s is None
@@ -70,14 +94,11 @@ class ResumeWitness(StrictModel):
                     i != "start_controls_and_current_record_identity_unverified" for i in v.issues
                 )
             ):
-                raise ValueError("续跑只接受原生开始证据绑定的同一零打卡暂停记录")
+                raise ValueError("续跑只接受原生开始证据绑定的同一进度暂停记录")
             ids.add(frame.frame_id)
             previous = frame.sampled_at
         if (
             saved.run_control_state != "paused"
-            or saved.completed_checkpoints != 0
-            or len(saved.checkpoint_cards) != 1
-            or saved.checkpoint_cards[0].state not in {"pending", "assigned"}
             or any(
                 f.inspection.run_control_state != "paused"
                 or f.inspection.elapsed_s != saved.elapsed_s
@@ -115,7 +136,7 @@ def resume_once(connector, original, saved, stamp: datetime, authorize: Callable
             or view.run_control_state != "paused"
             or view.elapsed_s != old.elapsed_s
             or view.distance_m != old.distance_m
-            or view.completed_checkpoints != 0
+            or view.completed_checkpoints != old.completed_checkpoints
             or not same_anchor_cards(view.checkpoint_cards, old.checkpoint_cards)
             or view.gps_label != GPS_READY_LABEL
             or any(

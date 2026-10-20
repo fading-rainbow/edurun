@@ -121,7 +121,14 @@ class SessionRunner:
                 issue != "start_controls_and_current_record_identity_unverified"
                 for issue in view.issues
             )
-            or any(card.state != "pending" and card.name not in allowed for card in cards)
+            or any(
+                (card.state == "assigned" and card.name not in allowed)
+                or (
+                    card.state == "completed"
+                    and card.name not in (set(allowed) | set(c.completed_names))
+                )
+                for card in cards
+            )
         ):
             return False
         if view.completed_checkpoints == c.completed + 1:

@@ -110,14 +110,45 @@ class TraceRegistration:
         raise ValueError("原App独立距离与地图估计不一致，不导航")
 
 
-def received_trace(
-    path: Path, planner: RoutePlanner, *, start_frame_id=None, start_request_id=None
-):
-    if path.stat().st_size > 4 * 1024 * 1024:
+def _trace_values(path: Path, extra_paths):
+    paths = tuple(dict.fromkeys((path, *extra_paths)))
+    if len(paths) > 5 or sum(p.stat().st_size for p in paths) > 4 * 1024 * 1024:
         raise ValueError("接收轨迹日志超过有限窗口")
+    values, seen, previous = [], {}, None
+    # 来源由本机已验证的续跑父子链给出：最旧父记录在最后，不能用排序重写时钟。
+    for source in reversed(paths):
+        for line in source.read_text("utf-8-sig").splitlines():
+            value = json.loads(line)
+            if not isinstance(value, dict):
+                raise ValueError("接收轨迹行结构未知")
+            frame_id = value.get("frame_id")
+            if isinstance(frame_id, str):
+                if frame_id in seen:
+                    if seen[frame_id] != value:
+                        raise ValueError("重复接收帧数据冲突，不拼接")
+                    continue
+                seen[frame_id] = value
+            if len(paths) > 1:
+                sampled, observed = value.get("sampled_at"), value.get("android_observed_ns")
+                if (
+                    type(sampled) not in (int, float)
+                    or not math.isfinite(sampled)
+                    or sampled < 0
+                    or type(observed) is not int
+                    or observed <= 0
+                    or (previous is not None and (sampled < previous[0] or observed < previous[1]))
+                ):
+                    raise ValueError("接收轨迹跨时钟会话或缺少真实采集时间，不拼接")
+                previous = sampled, observed
+            values.append(value)
+    return values
+
+
+def received_trace(
+    path: Path, planner: RoutePlanner, *, start_frame_id=None, start_request_id=None, extra_paths=()
+):
     points, start_point, fixes, latest_observed = [], None, [], None
-    for line in path.read_text("utf-8-sig").splitlines():
-        value = json.loads(line)
+    for value in _trace_values(path, extra_paths):
         gps, observed = value.get("gps_reception"), value.get("android_observed_ns")
         if not gps or not gps.get("registered") or not gps.get("has_accuracy"):
             continue
@@ -158,6 +189,12 @@ def received_trace(
             if len(recent) == 2:
                 break
     current, turns = points[-1], []
+
+    def independent(left, right):
+        a, b, c = (np.asarray(planner.xy(p)) for p in (left, right, current))
+        u, v = b - a, c - a
+        return abs(u[0] * v[1] - u[1] * v[0]) / max(np.linalg.norm(u), np.linalg.norm(v), 1) >= 5
+
     for i in range(len(simplified) - 2, 0, -1):
         b = np.asarray(simplified[i])
         # GPS采样的圆角可被RDP保留为相距几米的两个真实顶点。支持方向应跨过
@@ -174,10 +211,24 @@ def received_trace(
         cross = incoming[0] * outgoing[1] - incoming[1] * outgoing[0]
         angle = math.degrees(math.atan2(abs(cross), incoming @ outgoing))
         point = planner.geo(simplified[i])
-        if angle < 25 or distance(point, turns[-1] if turns else current) < 10:
+        # 折返180度在已绘轨迹上重合，没有可辨认的新几何拐角。
+        if angle < 25 or angle > 155 or distance(point, turns[-1] if turns else current) < 10:
             continue
         turns.append(point)
         if len(turns) == 2:
+            if not independent(turns[0], turns[1]):
+                turns.pop()
+                continue
+            if (
+                start_point is not None
+                and distance(start_point, points[0]) < 5
+                and distance(start_point, turns[0]) >= 10
+                and independent(turns[0], start_point)
+                and distance(start_point, current) <= distance(turns[1], current)
+            ):
+                return ReceivedAnchors(
+                    turns[0], start_point, current, "start_marker", tuple(recent), latest_observed
+                )
             return ReceivedAnchors(
                 turns[0],
                 turns[1],
@@ -192,6 +243,7 @@ def received_trace(
         and start_point is not None
         and distance(start_point, points[0]) < 5
         and distance(start_point, turns[0]) >= 10
+        and independent(turns[0], start_point)
     ):
         return ReceivedAnchors(
             turns[0], start_point, current, "start_marker", tuple(recent), latest_observed
@@ -291,32 +343,20 @@ class MapRecovery:
         )
         if original.serial != c.bridge.serial:
             raise ValueError("地图标定的开始凭据设备不匹配")
-        for path in (c.evidence / "input-observations.jsonl", *self.trace_sources):
-            if path.exists():
-                try:
-                    anchors = received_trace(
-                        path,
-                        d.planner,
-                        start_frame_id=original.before.frame_id,
-                        start_request_id=original.request_id,
-                    )
-                    near, far, actual = anchors.near, anchors.far, anchors.current
-                    source = path
-                    break
-                except ValueError as error:
-                    with (c.evidence / "map-trace-rejections.jsonl").open(
-                        "a", encoding="utf-8"
-                    ) as stream:
-                        stream.write(
-                            json.dumps(
-                                {"source_record": path.parent.name, "detail": str(error)},
-                                ensure_ascii=False,
-                            )
-                            + "\n"
-                        )
-                    continue
-        if source is None:
+        paths = tuple(
+            p for p in (c.evidence / "input-observations.jsonl", *self.trace_sources) if p.is_file()
+        )
+        if not paths:
             raise ValueError("没有本次实际接收轨迹的地图标定依据")
+        anchors = received_trace(
+            paths[0],
+            d.planner,
+            extra_paths=paths[1:],
+            start_frame_id=original.before.frame_id,
+            start_request_id=original.request_id,
+        )
+        near, far, actual = anchors.near, anchors.far, anchors.current
+        source = paths[0]
         # 先看实际视口；标记/锚点不可见时最多缩小两次，总调用预算仍是6次。
         map_view = c.ui.device(resourceId="com.lptiyu.tanke:id/textureMapView")
         if map_view.count != 1 or authorize() is not True:
@@ -471,6 +511,7 @@ class MapRecovery:
             "name": card.name,
             "app_confirmed": False,
             "trace_source": str(source),
+            "trace_sources": [str(path) for path in paths],
             "far_anchor_kind": anchors.far_kind,
             "using_known_roads": using_known_roads,
             "approach_only": approach_only,

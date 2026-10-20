@@ -29,6 +29,7 @@ class NamedCardObserver:
         self.catalog, self.confirmed_names = catalog, confirmed_names
         self.navigation_candidates: dict[str, GeoPoint] = {}
         self.approach_only_names: set[str] = set()
+        self.resumed_completed_names: frozenset[str] = frozenset()
 
     @property
     def allowed_names(self):
@@ -83,9 +84,12 @@ class NamedCardObserver:
         names = []
         try:
             for card in cards[:completed]:
-                if card.state != "completed" or card.name not in self.allowed_names:
+                if card.state != "completed" or card.name not in (
+                    self.allowed_names | self.resumed_completed_names
+                ):
                     return unknown
-                self.navigation_point(card.name)
+                if card.name not in self.resumed_completed_names:
+                    self.navigation_point(card.name)
                 names.append(card.name)
             point, number, name = None, None, None
             if completed < 3:

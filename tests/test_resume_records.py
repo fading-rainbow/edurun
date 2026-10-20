@@ -120,6 +120,16 @@ def test_error_with_genuine_continue_and_confirmed_pause_is_recoverable_not_succ
     assert not (child / "recovery-claimed.json").exists()
 
 
+def test_ticket_retains_completed_points_observed_after_original_continue(clean_error_record):
+    runtime, bridge, child, status = clean_error_record
+    saved = frame(30, ("已确认旧点",), "当前点", control="paused", distance_m=60, elapsed=590)
+    (child / "frames.jsonl").write_text(saved.model_dump_json() + "\n", "utf-8")
+    write(child / "status.json", status | {"completed_checkpoints": 1})
+    ticket = runtime._resume_ticket(bridge)
+    assert ticket[2].inspection.completed_checkpoints == 1
+    assert ticket[2].inspection.checkpoint_cards[0].name == "已确认旧点"
+
+
 @pytest.mark.parametrize(
     "changes",
     [

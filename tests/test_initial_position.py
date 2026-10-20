@@ -213,7 +213,7 @@ def test_started_anchor_rejects_changed_record_or_verification(changes):
             update={"inspection": cap.frame.inspection.model_copy(update=changes)}
         )
     )
-    with pytest.raises(ValueError, match="同一零打卡"):
+    with pytest.raises(ValueError, match="同一打卡进度"):
         refresh_started_anchor(c, proof, GeoPoint(lat=30, lon=120), lambda: True)
     assert not writes
 
