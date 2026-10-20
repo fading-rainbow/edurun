@@ -162,6 +162,7 @@ def test_native_service_stops_nonsticky_and_protects_lease_and_duplicate_nonce()
         "utf-8"
     )
     manifest = (root / "android/diagnostic/AndroidManifest.xml").read_text("utf-8")
+    assert "android.permission.ACCESS_BACKGROUND_LOCATION" in manifest
     assert "START_NOT_STICKY" in source and "startForeground" in source
     assert 'android:permission="android.permission.DUMP"' in manifest
     assert "motion-last-request.txt" in source

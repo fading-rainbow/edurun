@@ -82,10 +82,22 @@ def test_preflight_reports_unreachable_gps_before_factory_or_pending_fresh_setup
     runtime = LiveRuntime(tmp_path, Path(".local/profile.json"), Path(".local/run.json"))
 
     class Bridge(MuMuBridge):
+        background_granted = True
+
         def __init__(self):
             pass
 
         def run(self, *args):
+            if args == ("shell", "dumpsys", "package", "com.edurun.diagnostic"):
+                permissions = {
+                    "ACCESS_FINE_LOCATION": True,
+                    "ACCESS_COARSE_LOCATION": True,
+                    "ACCESS_BACKGROUND_LOCATION": self.background_granted,
+                }
+                return "\n".join(
+                    f"android.permission.{name}: granted={str(granted).lower()}"
+                    for name, granted in permissions.items()
+                )
             assert args == ("shell", "dumpsys", "sensorservice")
             return "Mode: NORMAL"
 
@@ -113,6 +125,9 @@ def test_preflight_reports_unreachable_gps_before_factory_or_pending_fresh_setup
         "pass",
         "新会话起点待正式零状态后设置并实收核验；尚未移动或开始",
     )
+    Bridge.background_granted = False
+    blocked_background = runtime.preflight(route, Bridge())
+    assert blocked_background["runtime"] == ("not_ready", "诊断组件后台定位权限未就绪；未开始乐跑")
 
 
 def test_long_run_requires_explicit_bounded_rollover_not_unlimited_clip():

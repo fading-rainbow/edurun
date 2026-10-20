@@ -483,6 +483,23 @@ class LiveRuntime:
         except ValueError:
             runtime_ok = False
             runtime_detail = "当前位置不在可达通道或GPS未就绪；未开始乐跑"
+        diagnostic_permissions = bridge.run("shell", "dumpsys", "package", "com.edurun.diagnostic")
+        if any(
+            len(
+                re.findall(
+                    r"(?m)^\s*android\.permission\." + name + r": granted=true\b",
+                    diagnostic_permissions,
+                )
+            )
+            != 1
+            for name in (
+                "ACCESS_FINE_LOCATION",
+                "ACCESS_COARSE_LOCATION",
+                "ACCESS_BACKGROUND_LOCATION",
+            )
+        ):
+            runtime_ok = False
+            runtime_detail = "诊断组件后台定位权限未就绪；未开始乐跑"
         if self.settings.resume_evidence is not None:
             try:
                 self._resume_ticket(bridge)
