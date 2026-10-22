@@ -690,6 +690,27 @@ def test_calibration_only_still_requires_pause_authorization(tmp_path, monkeypat
     assert not calls and not gestures and not d.observer.navigation_candidates
 
 
+def test_known_approach_is_not_silently_used_as_a_precise_map_center(tmp_path, monkeypatch):
+    r, d, _, calls, _ = map_component(tmp_path, monkeypatch, [0.99])
+    d.observer.allowed_names.add("新点")
+    assert r.resolve(lambda: True) is None and not calls
+    center = r.resolve(lambda: True, calibration_only=True)
+    assert center["name"] == "新点" and len(calls) == 1 and not center["position_command_sent"]
+
+
+def test_paused_jump_receipts_stay_in_raw_log_but_do_not_become_route_turns(tmp_path):
+    p, f, _ = trace_file(tmp_path, two_turns=True)
+    expected = received_trace(f, p)
+    rows = [json.loads(s) for s in f.read_text().splitlines()]
+    jump = json.loads(json.dumps(rows[-1]))
+    jump["frame_id"] = "paused-jump"
+    jump["exclude_route_calibration"] = True
+    jump["gps_reception"]["latitude"] = 80
+    f.write_text("\n".join(json.dumps(r) for r in rows + [jump]))
+    original = f.read_bytes()
+    assert received_trace(f, p) == expected and f.read_bytes() == original
+
+
 @pytest.mark.parametrize("radius", [17, 22])
 def test_green_circle_refinement_uses_pixels_not_range_and_ignores_bright_trace(radius):
     from budao.map_recovery import refined_green_center

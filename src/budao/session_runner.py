@@ -54,6 +54,7 @@ class SessionRunner:
         resolve_checkpoint: Callable | None = None,
         rollover_enabled: bool = False,
         recover_expired_windows: bool = False,
+        visit_checkpoint: Callable | None = None,
     ):
         if (
             not isinstance(connector, StartConnector)
@@ -102,6 +103,9 @@ class SessionRunner:
         if resolve_checkpoint is not None and not callable(resolve_checkpoint):
             raise ValueError("地图恢复必须是本机绑定的回调")
         self.resolve_checkpoint = resolve_checkpoint
+        if visit_checkpoint is not None and not callable(visit_checkpoint):
+            raise ValueError("暂停访问必须是本机受守卫回调")
+        self.visit_checkpoint = visit_checkpoint
         self.rollover_enabled = rollover_enabled
         self.recover_expired_windows = recover_expired_windows
         self.used = False
@@ -379,6 +383,23 @@ class SessionRunner:
                         self.dispatcher.observer.confirmed_names,
                     )
                 ]
+                if self.visit_checkpoint is not None and any(
+                    card.state == "assigned" for card in view.checkpoint_cards
+                ):
+                    report.update(
+                        state="recovering",
+                        message="暂停后访问当前打卡点并返回原锚点；等待原App确认",
+                    )
+                    publish(dict(report))
+                    waited = self._human_wait(cancel, authorize, map_recovery=self.visit_checkpoint)
+                    if waited is None:
+                        report.update(
+                            state="paused", message="暂停访问未完成；保留原记录与实际进度"
+                        )
+                        break
+                    deadline += waited
+                    window_deadline = self.clock() + 600
+                    continue
                 if unknown and self.resolve_checkpoint is not None:
                     report.update(state="recovering", message="未知打卡点；暂停输入后标定地图")
                     publish(dict(report))

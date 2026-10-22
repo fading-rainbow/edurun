@@ -277,6 +277,14 @@ def _move_paused_once(
         "received_target_twice": len(after) == 2,
         "after": [c.frame.model_dump(mode="json") for c in after],
         "actual_receipts": [c.motion_snapshot["gps_reception"] for c in after],
+        "input_observations": [
+            {
+                "frame_id": c.frame.frame_id,
+                "android_observed_ns": c.android_observed_ns,
+                "snapshot": c.motion_snapshot,
+            }
+            for c in after
+        ],
         "record_valid_proven": False,
         "one_click_workflow_verified": False,
     }

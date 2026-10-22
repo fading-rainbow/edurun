@@ -118,6 +118,7 @@ class RuntimeDispatcher:
             named_card_mode=True,
         )
         self.started = False
+        self.start_request_id: str | None = None
         self.finish_ready = False
         self.route_key: tuple[str, GeoPoint | None] | None = None
         self.approach_wait_since: float | None = None
@@ -146,6 +147,7 @@ class RuntimeDispatcher:
             f.frame_id for f in (witness.before, witness.first_running, witness.second_running)
         )
         self.started = True
+        self.start_request_id = witness.request_id
 
     def update(
         self, frame: CapturedRunFrame, *, renew_motion: Callable[[], None] | None = None
@@ -281,6 +283,49 @@ class RuntimeDispatcher:
             # 下一张新的运行帧仍须通过GPS/新鲜度/接收及道路守卫才会下发路线。
             self.controller.active, self.controller.active_name = target, assigned[0].name
         self.started = True
+        self.start_request_id = proof.original.request_id
+
+    def accept_paused_visit(self, proof):
+        """继承本会话原App实际完成；不授权移动或增加未知点导航坐标。"""
+        from .checkpoint_visit import PausedVisitWitness
+
+        if not isinstance(proof, PausedVisitWitness):
+            raise ValueError("暂停访问缺少实际因果凭据")
+        proof = PausedVisitWitness.model_validate(proof.model_dump())
+        before, final = proof.departure[0].inspection, proof.returned[-1]
+        name = [card.name for card in before.checkpoint_cards if card.state == "assigned"][0]
+        old_names = tuple(
+            card.name for card in before.checkpoint_cards if card.state == "completed"
+        )
+        if (
+            not self.started
+            or self.start_request_id != proof.original.request_id
+            or proof.original.serial != self.worker.bridge.serial
+            or not 0 <= self.clock() - final.sampled_at < 2
+            or self.worker.engine.enabled
+            or self.worker.state.moving
+            or self.worker.output_state_unknown
+            or distance(self.worker.engine.position, proof.origin) > 0.05
+            or not self.planner.contains(proof.origin)
+            or not self.planner.contains(proof.target)
+            or self.controller.completed != before.completed_checkpoints
+            or self.controller.completed_names != old_names
+            or self.controller.active_name not in (None, name)
+            or self.controller.distance_m > final.inspection.distance_m + 10
+        ):
+            raise ValueError("暂停访问不是当前控制器/原锚点的实际有序进度")
+        c = self.controller
+        c.completed = final.inspection.completed_checkpoints
+        c.completed_names = old_names + (name,)
+        c.distance_m = max(c.distance_m, final.inspection.distance_m)
+        c.last_time, c.last_elapsed_s = final.sampled_at, final.inspection.elapsed_s
+        c.active, c.active_name, c.arrived = None, None, False
+        c._discard_pending()
+        c.seen_named_frames.update(
+            f.frame_id for f in proof.departure + proof.outbound + proof.completed + proof.returned
+        )
+        self.observer.resumed_completed_names |= frozenset(c.completed_names)
+        self.route_key, self.finish_ready = None, False
 
     def stop(self):
         self.worker.stop()

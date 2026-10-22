@@ -164,6 +164,8 @@ def received_trace(
 ):
     points, start_point, fixes, latest_observed = [], None, [], None
     for value in _trace_values(path, extra_paths):
+        if value.get("exclude_route_calibration") is True:
+            continue  # 保留原始行；暂停访问的跳距不是连续跑步轨迹，不作为拐角配准依据。
         gps, observed = value.get("gps_reception"), value.get("android_observed_ns")
         if not gps or not gps.get("registered") or not gps.get("has_accuracy"):
             continue
@@ -469,7 +471,7 @@ class MapRecovery:
         ):
             raise ValueError("不是唯一当前未打卡的暂停页，不发送图片")
         card = assigned[0]
-        if card.name in d.observer.allowed_names:
+        if card.name in d.observer.allowed_names and not calibration_only:
             return
         source = None
         from .runtime import StartWitness

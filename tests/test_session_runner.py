@@ -250,6 +250,39 @@ def test_failed_expired_window_recovery_preserves_record(tmp_path, monkeypatch):
     assert c.calls.count("begin") == 1
 
 
+@pytest.mark.parametrize("known", [False, True])
+def test_opted_in_visit_intercepts_assigned_card_without_a_second_start(
+    tmp_path, monkeypatch, known
+):
+    r, _b, c, d, _m = setup(tmp_path)
+    visited = []
+    original_capture = c.capture
+    r.visit_checkpoint = lambda _authorize: visited.append("visit")
+    if known:
+        d.observer.confirmed_names = frozenset({"新点"})
+
+    def capture(**kw):
+        cap = original_capture(**kw)
+        if kw.get("renew_motion") and not visited:
+            f = frame(cap.frame.sampled_at, assigned="新点")
+            return RunCapture(
+                f, cap.hierarchy, cap.screenshot, cap.android_observed_ns, cap.motion_snapshot
+            )
+        return cap
+
+    def recover(cancel, authorize, *, map_recovery):
+        assert map_recovery is r.visit_checkpoint
+        map_recovery(authorize)
+        return 0.1
+
+    monkeypatch.setattr(c, "capture", capture)
+    monkeypatch.setattr(r, "_human_wait", recover)
+    result = r.run(lambda: True, lambda _: None)
+    assert (
+        result["state"] == "finish_ready" and visited == ["visit"] and c.calls.count("begin") == 1
+    )
+
+
 def test_expired_window_recovery_is_bounded_not_an_infinite_restart(tmp_path, monkeypatch):
     r, _b, c, _d, _m = setup(tmp_path)
     r.recover_expired_windows = True

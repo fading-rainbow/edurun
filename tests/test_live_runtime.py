@@ -15,6 +15,119 @@ def settings():
     }
 
 
+@pytest.mark.parametrize("strategy", ["route", "paused_visit_trial"])
+def test_native_factory_wires_strategy_without_starting_or_calling_the_model(
+    tmp_path, monkeypatch, strategy
+):
+    from types import SimpleNamespace
+
+    from test_raw_motion import clip
+
+    from budao.card_observer import NamedCardObserver
+    from budao.checkpoint_visit import PausedCheckpointVisitor
+    from budao.models import RouteConfig
+    from budao.mumu import MuMuBridge
+    from budao.profiles import CheckpointCatalog, CheckpointEntry
+    from budao.simulation import demo_config
+
+    directory = tmp_path / ".local"
+    (directory / "runs").mkdir(parents=True)
+    (directory / "setup").mkdir()
+    for name in ("profile.json", "receipt.json", "route.json"):
+        (directory / name).write_text("{}")
+    runtime = LiveRuntime.__new__(LiveRuntime)
+    runtime.root = tmp_path
+    runtime.profile = Path(".local/profile.json")
+    runtime.settings = RuntimeSettings.model_validate(
+        settings()
+        | {"maximum_s": 30, "checkpoint_strategy": strategy, "vision_config": ".local/vision.json"}
+    )
+    route = demo_config()
+    position = route.baseline[0]
+
+    class Bridge(MuMuBridge):
+        serial = "127.0.0.1:16416"
+
+        def __init__(self, _):
+            pass
+
+        def check_device(self):
+            pass
+
+        def run(self, *args):
+            assert args == ("shell", "dumpsys", "location")
+            return (
+                "    gps provider:\n"
+                f"      last location=Location[gps {position.lat},{position.lon} hAcc=1]\n"
+            )
+
+    profile = SimpleNamespace(
+        receipt_file=Path(".local/receipt.json"), route_file=Path(".local/route.json")
+    )
+    observer = NamedCardObserver(
+        CheckpointCatalog(
+            site_id="synthetic",
+            expected_candidate_count=8,
+            entries=(CheckpointEntry(name="已知点", approach=position),),
+        ),
+        frozenset({"已知点"}),
+    )
+    monkeypatch.setattr("budao.live_runtime.MuMuBridge", Bridge)
+    monkeypatch.setattr("budao.live_runtime.preflight_profile", lambda *_: None)
+    monkeypatch.setattr(
+        "budao.live_runtime._load", lambda _p, t: route if t is RouteConfig else profile
+    )
+    monkeypatch.setattr(NamedCardObserver, "from_profile", lambda *_: observer)
+    sample = clip(tmp_path, seconds=5)
+    monkeypatch.setattr("budao.live_runtime.prepare_recorded_probe", lambda *_a, **_kw: sample)
+    monkeypatch.setattr(runtime, "_template", lambda: None)
+    runner = runtime.build()
+    assert (
+        not runner.started and not runner.motion.started and runner.dispatcher.worker.thread is None
+    )
+    if strategy == "route":
+        assert runner.visit_checkpoint is None and runner.resolve_checkpoint is not None
+    else:
+        visitor = runner.visit_checkpoint.__self__
+        assert isinstance(visitor, PausedCheckpointVisitor) and runner.resolve_checkpoint is None
+        sentinel = object()
+        visitor.on_observer(sentinel)
+        assert runner.motion is sentinel
+
+
+def test_journal_marks_paused_receipts_without_modifying_their_actual_values(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from test_runtime import frame
+
+    from budao.live_runtime import JournalConnector
+    from budao.start_connector import StartConnector
+
+    snapshot = {
+        "raw_motion_probe": {"request_id": "e" * 32, "sent_rows": 0},
+        "gps_reception": {"latitude": 30, "longitude": 120},
+    }
+    cap = SimpleNamespace(
+        frame=frame(10),
+        hierarchy="<hierarchy/>",
+        screenshot=None,
+        motion_snapshot=snapshot,
+        android_observed_ns=10_000_000_000,
+    )
+    monkeypatch.setattr(StartConnector, "capture", lambda *_a, **_kw: cap)
+    connector = JournalConnector.__new__(JournalConnector)
+    connector.evidence = tmp_path
+    connector.exclude_route_calibration = True
+    connector.capture()
+    connector.exclude_route_calibration = False
+    connector.capture()
+    rows = [json.loads(x) for x in (tmp_path / "input-observations.jsonl").read_text().splitlines()]
+    assert (
+        rows[0]["exclude_route_calibration"] is True and "exclude_route_calibration" not in rows[1]
+    )
+    assert rows[0]["gps_reception"] == rows[1]["gps_reception"] == snapshot["gps_reception"]
+
+
 @pytest.mark.parametrize("failed", [False, True])
 def test_cleanup_diagnostics_are_only_written_to_private_evidence(tmp_path, monkeypatch, failed):
     from types import SimpleNamespace

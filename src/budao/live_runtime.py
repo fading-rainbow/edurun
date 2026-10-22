@@ -62,9 +62,14 @@ class RuntimeSettings(StrictModel):
     vision_config: Path | None = None
     resume_evidence: Path | None = None
     initialize_fresh_position: bool = Field(default=False, strict=True)
+    checkpoint_strategy: Literal["route", "paused_visit_trial"] = "route"
 
     @model_validator(mode="after")
     def bounded_total(self):
+        if self.checkpoint_strategy == "paused_visit_trial" and self.vision_config is None:
+            raise ValueError("暂停访问试运行需要独立地图标定配置")
+        if self.checkpoint_strategy == "paused_visit_trial" and self.resume_evidence is not None:
+            raise ValueError("暂停访问试运行仅用于新的原生会话；不转换旧记录")
         if self.initialize_fresh_position and self.resume_evidence is not None:
             raise ValueError("已有会话不能设置新起点")
         if self.maximum_s > 900 and not self.rollover_enabled:
@@ -192,6 +197,8 @@ class JournalConnector(StartConnector):
                     )
                 },
             }
+            if getattr(self, "exclude_route_calibration", False):
+                compact["exclude_route_calibration"] = True
             with (self.evidence / "input-observations.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(compact) + "\n")
         if value.screenshot is not None:
@@ -616,7 +623,18 @@ class LiveRuntime:
             recovery = MapRecovery(
                 self.root, self.settings.vision_config, connector, dispatcher, trace_sources=sources
             )
-            runner.resolve_checkpoint = recovery.resolve
+            if self.settings.checkpoint_strategy == "paused_visit_trial":
+                from .checkpoint_visit import PausedCheckpointVisitor
+
+                visitor = PausedCheckpointVisitor(
+                    recovery,
+                    clip,
+                    lambda: runner.start_stamp.date(),
+                    on_observer=lambda motion: setattr(runner, "motion", motion),
+                )
+                runner.visit_checkpoint = visitor.visit
+            else:
+                runner.resolve_checkpoint = recovery.resolve
 
         if ticket is not None:
             directory, original, saved, stamp, grade = ticket
