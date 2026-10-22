@@ -276,7 +276,13 @@ final class RawMotionProbe implements SensorEventListener {
                 // 回放中不序列化全量原始事件，避免主线程快照/大文本布局阻塞接收队列。
                 // 完成或失败后再输出完整证据；运行中的计数不作为接收验收证明。
                 if (!active && !boundedStream) { report.put("sent_samples", sent); report.put("received_samples", received); }
-                if (boundedStream) { report.put("sent_audit_prefix", sent); report.put("received_audit_prefix", received); }
+                if (boundedStream && !active) {
+                    report.put("sent_audit_prefix", sent); report.put("received_audit_prefix", received);
+                } else if (boundedStream) {
+                    // PREPARE放入的是数组引用；运行时移除，避免每250ms持锁序列化增长的
+                    // 审计前缀而阻塞20ms工作线程。数组留在内存，停止/完成后完整输出。
+                    report.remove("sent_audit_prefix"); report.remove("received_audit_prefix");
+                }
                 // 脱离工作线程中的可变对象，快照序列化不会遍历并发写入的JSONArray。
                 return new JSONObject(report.toString());
             } catch (Exception failure) { return new JSONObject(); }

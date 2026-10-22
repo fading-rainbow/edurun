@@ -403,7 +403,8 @@ class SessionRunner:
                     self.recover_expired_windows
                     and recovered_windows < 3
                     and sender
-                    and sender.get("raw_motion_probe", {}).get("state") == "lease_expired"
+                    and sender.get("raw_motion_probe", {}).get("state")
+                    in {"lease_expired", "clock_gap"}
                     and sender["raw_motion_probe"].get("request_id") == self.motion.request
                     and sender["raw_motion_probe"].get("clip_sha256") == self.clip.sha256
                     and sender["raw_motion_probe"].get("bounded_stream")

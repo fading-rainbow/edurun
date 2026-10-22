@@ -220,6 +220,20 @@ def test_native_service_stops_nonsticky_and_protects_lease_and_duplicate_nonce()
     assert 'finish("lease_expired")' in probe
 
 
+def test_running_snapshot_keeps_audit_prefixes_out_of_the_send_thread_lock_copy():
+    root = Path(__file__).resolve().parents[1]
+    probe = (root / "android/diagnostic/src/com/edurun/diagnostic/RawMotionProbe.java").read_text(
+        "utf-8"
+    )
+    assert "if (boundedStream && !active)" in probe
+    assert 'report.remove("sent_audit_prefix")' in probe
+    assert 'report.remove("received_audit_prefix")' in probe
+    # 仅减少活跃快照复制；原始审计缓存/停止后输出、100ms质量守卫不取消。
+    assert 'report.put("sent_audit_prefix", sent)' in probe
+    assert 'report.put("received_audit_prefix", received)' in probe
+    assert "gap > 100_000_000L" in probe and 'finish("clock_gap")' in probe
+
+
 def test_receiver_has_no_network_location_injection_or_user_auth_access():
     root = Path(__file__).resolve().parents[1]
     source = (root / "android/receiver/src/com/edurun/receiver/ReceiverActivity.java").read_text(

@@ -210,11 +210,23 @@ def test_changed_mode_owner_is_not_force_stopped_or_globally_reset(tmp_path):
     assert not any("force-stop" in call or "enable" in call for call in b.calls)
 
 
-def test_expired_own_window_uses_normal_pause_recovery_without_another_start(tmp_path, monkeypatch):
+@pytest.mark.parametrize("terminal", ["lease_expired", "clock_gap"])
+def test_expired_own_window_uses_normal_pause_recovery_without_another_start(
+    tmp_path, monkeypatch, terminal
+):
     r, _b, c, _d, _m = setup(tmp_path)
     c.expired = True
     r.recover_expired_windows = True
     calls = []
+    capture = c.capture
+
+    def terminal_capture(**kwargs):
+        cap = capture(**kwargs)
+        if kwargs.get("renew_motion") and c.expired:
+            cap.motion_snapshot["raw_motion_probe"]["state"] = terminal
+        return cap
+
+    monkeypatch.setattr(c, "capture", terminal_capture)
 
     def recover(cancel, authorize, *, pause_record=False):
         assert not cancel.is_set() and authorize() is True and pause_record is True
