@@ -141,6 +141,8 @@ def test_old_or_future_diagnostic_refused(fixture, sampled):
         ("provisioned_by_this_task", False),
         ("android_version", "15.0"),
         ("manager_sha256", "0" * 64),
+        ("manager_sha256", []),
+        ("manager_sha256", {}),
         ("serial", "USB-PHONE"),
         ("serial", "emulator-5580"),
         ("serial", "192.168.1.1:5555"),
@@ -194,6 +196,22 @@ def test_imported_instance_and_modified_manager_refused(fixture):
     with pytest.raises(ValueError):
         b.run("shell", "input", "keyevent", "4")
     assert not any("input" in cmd for cmd in fixture["commands"])
+
+
+def test_additional_verified_manager_pin_accepts_matching_receipt_and_binary(fixture, monkeypatch):
+    digest = fixture["receipt"]["manager_sha256"]
+    monkeypatch.setattr(mumu, "MANAGER_SHA256", "0" * 64)
+    monkeypatch.setattr(mumu, "ADDITIONAL_MANAGER_SHA256", frozenset({digest}))
+    assert make(fixture).receipt["manager_sha256"] == digest
+
+
+def test_two_allowed_pins_cannot_be_mixed_between_receipt_and_binary(fixture, monkeypatch):
+    other_digest = "a" * 64
+    monkeypatch.setattr(mumu, "ADDITIONAL_MANAGER_SHA256", frozenset({other_digest}))
+    fixture["receipt"]["manager_sha256"] = other_digest
+    with pytest.raises(ValueError, match="签名版本"):
+        make(fixture)
+    assert not fixture["commands"]
 
 
 @pytest.mark.parametrize("args", [("emu", "kill"), ("kill-server",), ("connect", "device"), ()])

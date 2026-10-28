@@ -17,8 +17,12 @@ from .android import DIAGNOSTIC_PACKAGE, AndroidBridge, default_adb
 from .models import GeoPoint
 
 PLAYER_NAME = "BudaoRun_MuMu"
-# 本任务官方下载、实测 Valid NetEase 签名的6.8.4.0管理器；升级需重新核验。
+# 本任务官方下载、实测 Valid NetEase 签名的管理器；升级需重新核验。
 MANAGER_SHA256 = "2eff3e9f096b2cddfc4a86955555e636c6e853eba5f54b0bf8b9f2441a1d9dbb"
+# 6.8.8 升级后独立校验了官方签名、可执行文件和实例身份；两版均需匹配凭据中的确切哈希。
+ADDITIONAL_MANAGER_SHA256 = frozenset(
+    {"415c884b965332b4107f1744acd187603595edc56fe43d4e4ec61e387a2acfcd"}
+)
 
 
 class LocationAuthorizationExpired(RuntimeError):
@@ -49,7 +53,8 @@ class MuMuBridge(AndroidBridge):
             or r.get("android_version") != "12.0"
             or r.get("provisioned_by_this_task") is not True
             or r.get("old_login_data_imported") is not False
-            or r.get("manager_sha256") != MANAGER_SHA256
+            or not isinstance(r.get("manager_sha256"), str)
+            or r.get("manager_sha256") not in {MANAGER_SHA256, *ADDITIONAL_MANAGER_SHA256}
         ):
             raise ValueError("不是本任务创建的空白MuMu对照实例")
         self.serial = r["serial"]
@@ -74,7 +79,7 @@ class MuMuBridge(AndroidBridge):
         ):
             raise ValueError("实例路径不在独立安装根目录，或使用了重定向")
         with self.manager.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != MANAGER_SHA256:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != r["manager_sha256"]:
                 raise ValueError("MuMu管理器不是已验证的签名版本")
         self.fingerprint = self.manager.stat()
         self.adb, self.runner, self.avd_name = adb or default_adb(), runner, PLAYER_NAME
