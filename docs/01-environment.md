@@ -135,3 +135,22 @@ Git 验证和同步状态见[阶段进度](09-results-and-next-steps.md)。
 `fresh-mcp-apk-summary.json`（名称为 summary，但内容是完整失败/局部观察）、
 `fresh-mcp-class-search.json`、`fresh-mcp-evidence.json`。
 当前环境已能运行 provider；**目标 Manifest 兼容性和在线设备仍是下一阶段的独立问题**。
+
+## 7. 用户重启后的当前聊天复核（2026-11-02 23:51 +08:00）
+
+用户报告已重启后，直接从本聊天调用，不再通过临时独立 MCP 代验：
+
+- `inspect_adb_client` 成功，SDK ADB `37.0.0-14910828`，`path_source=environment`。
+  Evidence：`ev_f0d19f28a2ccf50be78538a1807d08123a09014fa70c42b5e266aa2d260ee6ac`。
+- `binary_session` 报告服务器启动于 `2026-11-02T15:50:20.272Z`（本地 23:50:20），
+  包版本 `6.8.0`，234 个工具；Android/JADX 和 ADB provider 均 available。
+- 与指定版本、`E:/REA/scripts/rea.mjs` 和 combined catalog 摘要比较，`alignment=aligned`。
+  首次比较误传 tools 摘要；根据本机 `src/mcpDoctor.ts:326` 改为 combined 摘要后已纠正，
+  **无需因此再次重启**。局部摘要和完整目录摘要不可混用。
+- `list_adb_devices` 成功，仍为 `devices=[]`。
+  Evidence：`ev_40ff645d715a9026848e90b51d652d9e0d2fc6e28d759cf6f136bfd003d8187e`。
+- 再次只读查询 MuMu index 1，`is_android_started=false`、`is_process_started=false`。
+  本轮未启动模拟器或 App，尚无实际设备 SDK/ABI/当前安装包的新证据。
+
+本轮证据：`.local/research/restart-verification-20261102/rea-restart-verification.json`。
+此前第 6 节的“当前聊天未重启”是上轮历史状态，本节取代其当前状态判断。
