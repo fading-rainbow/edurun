@@ -154,3 +154,28 @@ Git 验证和同步状态见[阶段进度](09-results-and-next-steps.md)。
 
 本轮证据：`.local/research/restart-verification-20261102/rea-restart-verification.json`。
 此前第 6 节的“当前聊天未重启”是上轮历史状态，本节取代其当前状态判断。
+
+## 8. 用户授权启动第二台 MuMu 后的在线审计
+
+观测：2026-11-02 23:56–23:58 +08:00。用户明确要求代理启动 MuMu，指定第二台已装乐跑。
+
+- 管理器 `info --vmindex all` 只读清单包含 index 0 `MuMu安卓设备` 和 index 1 `BudaoRun_MuMu`。
+  第二台与现有 6.8.8 所有权凭据吻合，不依据显示顺序或历史端口盲选。
+- 实际执行 `uv run budao start-mumu --receipt .local/setup/mumu-owned-instance-6.8.8.json`。
+  现有守卫完成管理器哈希、实例归属、实时 loopback 端口、Root 关闭、shell uid 2000 和 SDK 32 校验；
+  返回 `project_instance_started=true`、`target_app_launch_requested=false`。
+- index 1 已启动并显示窗口；index 0 启动前后均停止。没有 wipe、改配置、复制登录数据或关闭用户应用。
+- REA `list_adb_devices` 实际为一个在线设备，精确匹配管理器实时地址与项目凭据。
+- REA `inspect_adb_device`：Android release `12`，SDK `32`；
+  `ro.product.cpu.abilist=x86_64,arm64-v8a,x86,armeabi-v7a,armeabi`，`ro.debuggable=0`。
+  Evidence：`ev_6c16246e41f6dfafabcc070d0bbc4b7e0fe2e9703b16b250032fda7f86b0ca78`。
+- REA 未观察到 `ro.kernel.qemu`，`emulator_observed=null`，不能仅凭这个字段判断设备种类。
+  MuMu 归属来自本机管理器/凭据匹配，不是 Android 声明的 Xiaomi 品牌或机型。
+- REA `resolve_adb_packages(query="tanke")` 唯一匹配 `com.lptiyu.tanke`；
+  `inspect_adb_package` 实测 `4.3.0` / code `230`、requested permissions `59`。
+- REA `pull_adb_package` 根据实际完整 `pm path` 清单仅取得 `base.apk` 一项，零失败；
+  本次设备清单未报告 split。摘要与旧本地样本完全一致，后续可以复用绑定相同摘要的静态证据。
+
+本轮证据目录：`.local/research/mumu-readonly-20261102/`，其中包含启动前后管理器清单、
+守卫启动结果、REA 设备/包信息、APK 集、签名/Manifest 工具输出和导出的 `rea-evidence.json`。
+APK、完整设备路径和原始输出都未入库。完整在线设备信息见本节，取代此前“仍离线”的当前判断。

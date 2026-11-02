@@ -31,3 +31,10 @@ Loader/Stub 命名提示需调查加载边界，但尚不能证明其运行时�
 后续每条记录必须包含：APK 摘要、原始类名、方法名/DEX prototype/重载 index、
 REA Evidence ID 或文件行号/偏移、直接引用、置信度、反射/动态加载等覆盖局限。
 尚不预设网络库、定位路径、随机点位来源或认证 SDK。
+
+## 当前设备证据复用
+
+本轮从第二台独立 MuMu 提取的当前 `base.apk` 摘要与 S01 完全一致；因此 S01 的 6 类清单
+现在也绑定到本次安装包。新取 aapt Manifest 的 application 同样明确声明
+`com.kiwivm.security.StubApplication`。未请求启动乐跑、未进行运行时解包或绕过，仍无业务方法链。
+最小下一步是用 REA 检查该已知类的字段/方法声明，再选择实际重载和静态引用，不猜测入口。
