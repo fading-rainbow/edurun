@@ -50,3 +50,6 @@ DEX 代码单元位置、原生库摘要、静态解码结果、覆盖局限与�
 - `LibName="kadp"` 来自已核实 XOR 方法与常量的离线推导，不是运行时观测。
 - 两方法 × 两 ABI 的 JNI binding 为 4/4 unknown；导出/重定位 partial，不能推断 absence。
 - 没有请求启动 App、执行代码或观察网络；业务调用链仍未建立。
+
+S02 后已进行原版 App 正常启动和有限脱敏观察，见 [运行报告](11-runtime-and-network-policy.md)。
+焦点到达 MainActivity，但映射权限拒绝，未将 S02 的 JNI unknown 改为 matched。

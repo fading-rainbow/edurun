@@ -179,3 +179,10 @@ Git 验证和同步状态见[阶段进度](09-results-and-next-steps.md)。
 本轮证据目录：`.local/research/mumu-readonly-20261102/`，其中包含启动前后管理器清单、
 守卫启动结果、REA 设备/包信息、APK 集、签名/Manifest 工具输出和导出的 `rea-evidence.json`。
 APK、完整设备路径和原始输出都未入库。完整在线设备信息见本节，取代此前“仍离线”的当前判断。
+
+## 9. 原 App 正常启动后的补充
+
+2026-11-03 用户授权自主常规决策后，REA 正常启动原包，已取得 SplashActivity 和 MainActivity
+窗口焦点。package ABI 为 arm64-v8a；系统原生桥声明 libnb.so 和 ARM→x86 映射。
+maps 读取被拒绝、exe读取未成功，未提权，实际库身份仍未知。
+详见 [运行与网络配置报告](11-runtime-and-network-policy.md)，不将包 ABI 误作实际进程 ISA。

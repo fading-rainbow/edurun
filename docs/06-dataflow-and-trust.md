@@ -12,3 +12,7 @@
 具体 JNI 实现映射仍为 unknown，详见 [加载边界证据](10-loader-boundary.md)。
 这是 Java/native 本地表示边界，不等于客户端/服务器业务信任边界已确认，
 更不证明任何本地返回能替代本人验证、服务端确认或成绩审核。
+
+新增[本机模型边界图](../diagrams/mock-trust-boundary.mmd)，真实loopback HTTP 已验证
+valid 声明不会直接增加模型有效计数、pending_review/accepted 分离。
+此图只解释自建假模型，原 App 的客户端/服务器业务信任边界仍未知。

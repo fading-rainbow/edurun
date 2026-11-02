@@ -121,5 +121,6 @@ parent Evidence：`ev_ce559f11a0aca4a75694bde32c9adf5a0a39efdfd3959afd7d9ec6f7da
 已用现有 Mermaid CLI 11.17.0 实际生成本机 SVG/PNG，并视觉检查，无需安装依赖。
 10 个方法显示文本与所保留 Evidence 的 UTF-8 字节一致；行号在写入时保留原换行，已逐项核对。
 
-下一阶段仅建议经用户同意启动原版 App，读取可访问的启动/进程 ABI/库元数据，
-不操作登录、人脸、跑步，不改代理/证书或绕过校验。授权已询问，未获同意前继续离线。
+后续用户已授予常规决策权，正常启动及有限只读观察已执行，见
+[运行报告](11-runtime-and-network-policy.md)。Main焦点已取得，但库映射仍受权限限制；
+没有将 native unknown 改成匹配，也没有通过 Root/证书/校验改动补造动态证据。

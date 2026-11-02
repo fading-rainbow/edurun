@@ -20,6 +20,8 @@ from .profiles import preflight_profile, private_file
 from .raw_motion import prepare_recorded_probe, replay_recorded_motion
 from .recorded_site import prepare_recorded_site
 from .replay import replay_diagnostic
+from .research_mock import run_mock_demo
+from .research_observe import observe_startup
 from .routes import RoutePlanner, import_track, path_length
 from .sensor_probe import probe_mumu_sensors
 from .simulation import demo_config, simulate
@@ -130,6 +132,13 @@ def main() -> int:
     mumu_target.add_argument(
         "--receipt", type=Path, default=Path(".local/setup/mumu-owned-instance.json")
     )
+    startup_observer = commands.add_parser(
+        "observe-mumu-startup", help="只读已运行乐跑的脱敏日志计数；不启动、点击或拦截流量"
+    )
+    startup_observer.add_argument("--receipt", type=Path, required=True)
+    startup_observer.add_argument("--lines", type=int, default=200)
+    startup_observer.add_argument("--age-seconds", type=int, default=600)
+    commands.add_parser("research-mock-demo", help="仅本机假数据HTTP状态机演示，不连接目标服务")
     profile = commands.add_parser(
         "preflight-profile", help="只读本机账号/路线/固定点配置，不连接设备"
     )
@@ -272,6 +281,12 @@ def main() -> int:
             }
         elif args.command == "inspect-mumu-target":
             result = inspect_target(MuMuBridge(args.receipt)).model_dump()
+        elif args.command == "observe-mumu-startup":
+            result = observe_startup(
+                MuMuBridge(args.receipt), lines=args.lines, age_seconds=args.age_seconds
+            )
+        elif args.command == "research-mock-demo":
+            result = run_mock_demo()
         elif args.command == "preflight-profile":
             result = preflight_profile(args.profile, Path.cwd())
         elif args.command == "plan-snapshot":

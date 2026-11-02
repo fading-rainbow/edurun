@@ -23,6 +23,11 @@
 | E17 | JNI candidate 为零就证明没有实现 | 不成立 | 四 binding 均 unknown，导出/表/重定位 partial，动态构造仍未知 |
 | E18 | 当前真实加载的是 ARM64 libkadp.so | 未验证 | 只有打包身份与选择分支，未观测 App 运行/加载 |
 | E19 | Loader 的系统属性/文件路径就是 API 清单 | 不成立 | 仅本地探测，无 HTTP/正常通信证据 |
+| E20 | 原包能正常启动到MainActivity | 已证实到窗口焦点层 | start ok及Splash/Main双焦点一致；不是登录/服务器验收 |
+| E21 | 安装ABI=ARM64就证明实际ISA/加载库 | 未证实 | 原生桥配置可读；maps/exe未取得，实际库仍未知 |
+| E22 | 有user CA或debug-overrides就能直接抓明文 | 未证实 | base仅system、debug依赖App标志、domain含scheme；无TLS实测 |
+| E23 | API2日志候选0说明无API通信 | 不成立 | 仅有界日志投影，没有HTTP请求/响应证据 |
+| E24 | Mock已验证客户端声明和审核分离 | 已证实于假模型 | 实际loopback HTTP；缺身份/重放/不完整拒绝，待审核不计数，审核只加一次 |
 
 环境修复的“文件安装”“doctor 就绪”“新 MCP 实际调用”“当前聊天 MCP 生效”
 分别验收，不相互替代；最终结果见环境审计。

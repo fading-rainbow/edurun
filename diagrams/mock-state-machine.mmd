@@ -1,0 +1,15 @@
+flowchart TD
+    READY["ready: synthetic model only"] --> IDENTITY{"Identity fixture passed?"}
+    IDENTITY -->|"No"| NO_ID["412 IDENTITY_REQUIRED: ready unchanged"]
+    IDENTITY -->|"Yes"| RUNNING["running: ordered mock-a / mock-b / mock-c"]
+    RUNNING --> FINISH{"Fake progress thresholds satisfied?"}
+    FINISH -->|"No"| INCOMPLETE["412 INCOMPLETE: running unchanged"]
+    FINISH -->|"Yes"| PENDING["pending_review: model count remains 0"]
+    PENDING --> REVIEW{"Synthetic review fixture"}
+    REVIEW -->|"Accept"| ACCEPTED["accepted: model count becomes 1"]
+    REVIEW -->|"Reject"| REJECTED["rejected: model count remains 0"]
+    ACCEPTED --> AGAIN["Repeat review: 409, count unchanged"]
+    REJECTED --> AGAIN
+    NOTE["Not the target App protocol or a real record"]
+    classDef separate fill:#fff3cd,stroke:#a66b00
+    class NOTE separate

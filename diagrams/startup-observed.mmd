@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Agent as Codex
+    participant REA as REA MCP
+    participant OS as Owned MuMu Android
+    Agent->>REA: Inspect focused component
+    REA->>OS: Read window manager metadata
+    OS-->>Agent: Lawnchair launcher
+    Agent->>REA: Normal start of original package
+    REA->>OS: Resolve launcher and am start -W
+    OS-->>Agent: Status ok, SplashActivity
+    Agent->>REA: Read focus after normal initialization
+    OS-->>Agent: MainActivity window and focused app
+    Agent->>REA: Read verified main PID maps
+    REA->>OS: Pull proc maps, read only
+    OS-->>Agent: Permission denied
+    Note over Agent,OS: No root, login, face, run, proxy or record operation

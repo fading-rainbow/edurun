@@ -1,0 +1,16 @@
+flowchart TD
+    subgraph CLIENT["Synthetic Python HTTP client"]
+        CLAIM["Client claim: valid true"]
+        SIGN["Generated demo key, signed request"]
+    end
+    subgraph SERVER["Loopback-only model server"]
+        AUTH["MAC, timestamp and nonce checks"]
+        RULES["Fake identity and ordered progress rules"]
+        PENDING["Pending review: model count 0"]
+        REVIEW["Synthetic review fixture"]
+        ACCEPT["Accepted once: model count 1"]
+    end
+    CLAIM --> SIGN --> AUTH --> RULES --> PENDING --> REVIEW --> ACCEPT
+    REAL["Real App and real backend: no connection, no record"]
+    classDef separate fill:#fff3cd,stroke:#a66b00
+    class REAL separate

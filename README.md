@@ -6,6 +6,16 @@
 见[执行范围](docs/00-scope-and-rules.md)、[环境审计](docs/01-environment.md)
 及[阶段进度与下一步](docs/09-results-and-next-steps.md)。现有源码和独立模拟器数据保留。
 
+已实测正常启动至 MainActivity，提供[有界脱敏观察器](docs/11-runtime-and-network-policy.md)
+和[本机假协议演示](docs/12-local-mock-protocol.md)：
+
+```powershell
+uv run budao observe-mumu-startup --receipt .local/setup/mumu-owned-instance-6.8.8.json
+uv run budao research-mock-demo
+```
+
+观察器不启动/点击 App 或返回原始日志；Mock 只用假数据，不连接真实接口、不创建真实成绩。
+
 **当前是实验环境、诊断工具和控制核心，不是一键生成有效乐跑记录的成品。**
 
 一次代理调度的正式App流程现已计入有效成绩；**MuMu详情步数仍为0**，无人值守入口及
