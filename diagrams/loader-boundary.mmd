@@ -1,0 +1,16 @@
+flowchart TD
+    MAN["Manifest application declaration"] --> STUB["StubApplication"]
+    STUB --> CLINIT["Static initializer clinit()V"]
+    CLINIT -->|"DEX code-unit 0x78"| LI["StubApplication.lI()V"]
+    LI -->|"DEX code-unit 0xb0"| LOAD["SoLoader.load(String)V"]
+    CLINIT --> XOR["Xkd.l: literal XOR derivation"]
+    XOR --> NAME["Derived LibName: kadp"]
+    NAME --> LOAD
+    LOAD --> PROBES["ABI / system-property / file-header checks"]
+    LOAD --> SYSTEM["System.loadLibrary: name or suffixed name"]
+    SYSTEM -.-> LIBS["Packaged candidates: ARM64 and ARMv7 libkadp.so"]
+    STUB --> NATIVE["attachBaseContext and onCreate: native declarations"]
+    NATIVE -.-> UNKNOWN["JNI implementation mapping unknown: 4 of 4"]
+    LIBS -.-> UNKNOWN
+    classDef unknown fill:#fff3cd,stroke:#a66b00
+    class UNKNOWN unknown

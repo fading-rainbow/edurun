@@ -1,6 +1,6 @@
 # 静态分析证据索引
 
-更新：2026-11-02。状态：仅完成旧样本 DEX 类清单验证，未进入业务方法分析。
+更新：2026-11-03。状态：已完成最小 Java/native 加载边界；业务模块/接口仍未恢复。
 
 本轮先处理 REA Android provider 缺口，随后实际完成一次类清单检索。
 既有 `QitRun-analysis.md` 针对另一个样本，不作为步道乐跑当前 APK 的证据。
@@ -24,7 +24,8 @@ kotlin.coroutines.jvm.internal.DebugProbesKt
 **已证实：** provider 能实际加载该样本并枚举上述类，不再只是配置就绪。
 **局限：** complete 仅覆盖该 provider 的已解析类清单，不表示整个业务代码已恢复。
 Loader/Stub 命名提示需调查加载边界，但尚不能证明其运行时行为或具体保护方案。
-本轮没有方法体、调用者/被调用者或业务网络库的新证据，不能凭这些名称制作业务模块图。
+S01 当轮没有方法体、调用者/被调用者或业务网络库证据，不能凭类名制作业务模块图。
+后续加载边界证据见 S02。
 
 ## 后续记录要求
 
@@ -38,3 +39,14 @@ REA Evidence ID 或文件行号/偏移、直接引用、置信度、反射/动�
 现在也绑定到本次安装包。新取 aapt Manifest 的 application 同样明确声明
 `com.kiwivm.security.StubApplication`。未请求启动乐跑、未进行运行时解包或绕过，仍无业务方法链。
 最小下一步是用 REA 检查该已知类的字段/方法声明，再选择实际重载和静态引用，不猜测入口。
+
+## S02：当前 APK 的最小加载链（已执行）
+
+详见 [10-loader-boundary.md](10-loader-boundary.md)，含类/方法 parent Evidence、
+DEX 代码单元位置、原生库摘要、静态解码结果、覆盖局限与初版 Mermaid 图。
+
+- `attachBaseContext`、`onCreate` 已实测为 native，方法体不可用；不是空实现。
+- REA 直接引用确认 `<clinit>` → `lI` → `SoLoader.load`；源码中存在 `System.loadLibrary`。
+- `LibName="kadp"` 来自已核实 XOR 方法与常量的离线推导，不是运行时观测。
+- 两方法 × 两 ABI 的 JNI binding 为 4/4 unknown；导出/重定位 partial，不能推断 absence。
+- 没有请求启动 App、执行代码或观察网络；业务调用链仍未建立。
