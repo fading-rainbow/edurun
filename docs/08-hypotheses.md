@@ -28,6 +28,7 @@
 | E22 | 有user CA或debug-overrides就能直接抓明文 | 未证实 | base仅system、debug依赖App标志、domain含scheme；无TLS实测 |
 | E23 | API2日志候选0说明无API通信 | 不成立 | 仅有界日志投影，没有HTTP请求/响应证据 |
 | E24 | Mock已验证客户端声明和审核分离 | 已证实于假模型 | 实际loopback HTTP；缺身份/重放/不完整拒绝，待审核不计数，审核只加一次 |
+| E25 | 当前主进程开放常规命名WebView调试socket | 本次精确查询未发现 | 主PID/cmdline已核实，proc/net/unix可读；仅限定当时主进程和该命名，不证明无WebView |
 
 环境修复的“文件安装”“doctor 就绪”“新 MCP 实际调用”“当前聊天 MCP 生效”
 分别验收，不相互替代；最终结果见环境审计。

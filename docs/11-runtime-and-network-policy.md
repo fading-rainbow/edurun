@@ -101,3 +101,24 @@ Manifest 未显式声明 debuggable，package flags 也未见 DEBUGGABLE；不�
 maps 失败原因、有限状态/属性、aapt 原件、候选投影、脱敏摘要及验证/同步结果。
 没有原始 logcat、抓包、账户或生物资料。实际库映射、业务 API、登录/运动/打卡/人脸迁移仍未知。
 常规只读调查自主推进，不用 Root、绕过或假模型填补真实未知。
+
+## 7. WebView 调试入口只读探测
+
+本次观察原件保存时间：2026-11-03 08:17:52 +08:00（依据原探测JSON文件mtime）。
+
+用户对前轮“仅正常启动和只读诊断”的明确答复已收到；授权对应的启动此前已完成，
+本轮不重复启动、停止或点击 App。
+
+- 重新通过独立 MuMu 在线守卫；读取目标主 PID/cmdline，确认仍为 com.lptiyu.tanke。
+- `/proc/net/unix` 可读，在内存中只检索精确的 `webview_devtools_remote_<main-pid>` 名称，
+  **本次无匹配**；没有保存完整 socket 清单或其他应用 socket。
+- REA 进程枚举只有一个包名/包名前缀匹配进程；窗口仍为 MainActivity。
+  Evidence：`ev_dfe604a940369a17caa6bd4d51c59e16e833e22d67e6c7cb88c85af39ed79ef5`、
+  `ev_8e7dbe408b49c4dccfd9dc85ff6a5ef8532f068dfe7fadb727cd87f84aa69763`。
+- 没有可选的已确认 endpoint，故未调用浏览器 CDP 列表、未扫描主机端口、未建立 ADB 转发，
+  也未修改 WebView 调试/应用 debuggable 开关、Root、代理或证书。
+- 阴性结果只覆盖当时主进程的精确命名检索，不证明 App 没有 WebView、自定义调试入口，
+  或未来页面不会创建入口；不能把“无匹配”写成“已禁用所有调试”。
+
+原件：`.local/research/webview-probe-20261103/target-socket-probe.json`、
+两项 REA 元数据及导出的 `rea-evidence.json`；没有页面正文、URL、认证或账户数据。
