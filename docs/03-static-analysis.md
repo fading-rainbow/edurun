@@ -53,3 +53,11 @@ DEX 代码单元位置、原生库摘要、静态解码结果、覆盖局限与�
 
 S02 后已进行原版 App 正常启动和有限脱敏观察，见 [运行报告](11-runtime-and-network-policy.md)。
 焦点到达 MainActivity，但映射权限拒绝，未将 S02 的 JNI unknown 改为 matched。
+
+## S03：Web资产、原始DEX定义与业务组件字面量
+
+详见 [13-web-assets-and-component-correlation.md](13-web-assets-and-component-correlation.md)。
+根DEX原始class_defs为4；之前REA的6项是反编译器节点清单，不能直接等同原始定义数。
+头记载data范围外仍有58,492,172字节，7936个不同目标命名空间描述符样式字面量，
+其中262个Manifest组件名可匹配。它们不是恢复的方法/调用边，尚不能据此声称完整反编译。
+仅有一个通用JS桥和三份无script的HTML文档；嵌套SDK DEX未找到目标命名空间定义。

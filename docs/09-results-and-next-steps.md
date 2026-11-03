@@ -70,8 +70,17 @@ WebView 调试 socket，清单可读但精确名称无匹配；REA 确认仍是 
 本轮取证与验证/同步记录在 `.local/research/webview-probe-20261103/`，详见运行报告第7节。
 本次回归1232项通过（32.90s），ruff、diff及staged秘密扫描通过；原有AGENTS.md改动保留。
 
+Web资产/组件关联轮已完成，见[13](13-web-assets-and-component-correlation.md)：
+REA完整容器清单、一个JS桥的静态分析、三份无script的HTML、两份嵌套SDK DEX检查。
+新定位到根DEX未被普通索引解释的大区，含7936个不同目标描述符样式字符串、262项Manifest关联和
+21处项目域名URL字面量；均未冒充方法或真实请求。原件在`.local/research/web-assets-20261103/`。
+用户的最终目标已写入[14](14-final-acceptance.md)：原App一条可查询有效记录、次数从N到N+1，
+当前未验收。已询问用户是否能及时接手本人验证，确认前不开始长跑或提交。
+本轮1232项测试通过（30.10s），ruff、diff和staged秘密扫描通过；资产关联图已渲染并视觉检查。
+原APK/DEX/脚本/完整REA Evidence留本机，公开提交仅为脱敏报告、图和验收定义。
+
 ## 下一步（仅一项）
 
-**只读分析 APK 预置 Web 资产与 Manifest 业务组件的关联，补充离线模块/接口候选索引。**
+**用户可即时接手验证后，用Computer Use只读核对原App现有记录/有效次数基线，保留既有未完成记录。**
 不再等待原App启动确认；真实库/业务接口保留未知，不用提权、绕过或Mock成绩填补证据。
 本人验证、真实运动/成绩提交及现有数据保护继续按项目规则处理。

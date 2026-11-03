@@ -1,0 +1,18 @@
+flowchart TD
+    APK["Device-matched APK, 6428 ZIP entries"] --> ASSETS["227 assets"]
+    ASSETS --> DOCS["3 HTML documents, 0 scripts"]
+    ASSETS --> JS["1 JS bridge: window.android"]
+    JS -.-> PEER["Native peer and business handlers unknown"]
+    APK --> MAN["263 target-namespace Manifest entries"]
+    APK --> DEX["Root DEX: 58.5 MB"]
+    DEX --> INDEX["Ordinary class_defs: 4"]
+    DEX --> REGION["Region after declared data end 9732"]
+    REGION --> STRINGS["7936 distinct descriptor-like literals"]
+    MAN --> MATCH["262 names correlate, not call edges"]
+    STRINGS --> MATCH
+    REGION --> URLS["21 project-domain URL literals, no requests"]
+    APK --> SDK["2 nested SDK DEX: 3449 and 3375 classes"]
+    SDK --> NONE["0 target-namespace definitions in selected DEX"]
+    MATCH -.-> FLOW["Normal business transitions still unobserved"]
+    classDef unknown fill:#fff3cd,stroke:#a66b00
+    class PEER,FLOW unknown
